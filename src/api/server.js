@@ -9,8 +9,8 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(cookieParser());
-app.use('/api/auth', require('./routes/auth'));
-app.use('/api/emails', require('./routes/emails'));
+app.use("/api/auth", require("./routes/auth"));
+app.use("/api/emails", require("./routes/emails"));
 
 app.use(express.static(path.join(__dirname, "../../public")));
 
@@ -31,7 +31,7 @@ async function start() {
   });
 }
 
-start().catch(err => {
+start().catch((err) => {
   console.error("[server] Failed to start:", err);
   process.exit(1);
 });

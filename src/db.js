@@ -1,15 +1,15 @@
-const Database = require('better-sqlite3');
-const path = require('path');
-const fs = require('fs');
+const Database = require("better-sqlite3");
+const path = require("path");
+const fs = require("fs");
 
-const DB_DIR = path.join(__dirname, '../data');
-const DB_PATH = path.join(DB_DIR, 'siteflow.db');
+const DB_DIR = path.join(__dirname, "../data");
+const DB_PATH = path.join(DB_DIR, "siteflow.db");
 
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
 
 const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+db.pragma("journal_mode = WAL");
+db.pragma("foreign_keys = ON");
 
 function initDb() {
   db.exec(`
@@ -65,7 +65,7 @@ function initDb() {
       created_at INTEGER DEFAULT (unixepoch())
     );
   `);
-  console.log('[db] Tables ready');
+  console.log("[db] Tables ready");
 }
 
 module.exports = { db, initDb };
