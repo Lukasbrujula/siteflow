@@ -225,10 +225,28 @@ async function processEmail(email) {
     const sentiment = triage.sentiment || null;
     const urgency = triage.suggested_priority || null;
 
+    const escalated =
+      triage.escalation_triggered === true ||
+      triage.escalation_triggered === "true"
+        ? 1
+        : 0;
+    const escalationReason = escalated
+      ? triage.escalation_reason || null
+      : null;
+
     if (classification === "SPAM" || classification === "AD") {
       db.prepare(
-        "UPDATE emails SET status = ?, classification = ?, sentiment = ?, urgency = ? WHERE id = ?",
-      ).run("archived", classification, sentiment, urgency, email.id);
+        "UPDATE emails SET status = ?, classification = ?, sentiment = ?, urgency = ?, confidence = ?, escalation_triggered = ?, escalation_reason = ? WHERE id = ?",
+      ).run(
+        "archived",
+        classification,
+        sentiment,
+        urgency,
+        triage.confidence ?? null,
+        escalated,
+        escalationReason,
+        email.id,
+      );
       console.log("[workflow] Archived as " + classification);
       return;
     }
@@ -239,7 +257,7 @@ async function processEmail(email) {
     console.log("[workflow] Draft generated, length=" + draftReply.length);
 
     db.prepare(
-      "UPDATE emails SET status = ?, classification = ?, sentiment = ?, urgency = ?, confidence = ?, draft_reply = ?, subject = COALESCE(?, subject) WHERE id = ?",
+      "UPDATE emails SET status = ?, classification = ?, sentiment = ?, urgency = ?, confidence = ?, draft_reply = ?, subject = COALESCE(?, subject), escalation_triggered = ?, escalation_reason = ? WHERE id = ?",
     ).run(
       "draft",
       classification,
@@ -248,6 +266,8 @@ async function processEmail(email) {
       triage.confidence ?? null,
       draftReply,
       draftSubject,
+      escalated,
+      escalationReason,
       email.id,
     );
     console.log("[workflow] Done: " + email.subject);

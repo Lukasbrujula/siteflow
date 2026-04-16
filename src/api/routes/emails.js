@@ -24,7 +24,7 @@ router.get("/", requireAuth, (req, res) => {
   try {
     const { status, limit = 50, offset = 0 } = req.query;
     let query =
-      "SELECT id, from_address, subject, body, draft_reply, received_at, classification, sentiment, urgency, confidence, status, created_at FROM emails WHERE tenant_id = ?";
+      "SELECT id, from_address, subject, body, draft_reply, received_at, classification, sentiment, urgency, confidence, escalation_triggered, escalation_reason, status, created_at FROM emails WHERE tenant_id = ?";
     const params = [req.tenant.id];
     if (status) {
       query += " AND status = ?";
@@ -35,9 +35,15 @@ router.get("/", requireAuth, (req, res) => {
     const emails = db.prepare(query).all(...params);
 
     // Group by classification for frontend store compatibility
+    // Escalated emails route to "escalation" key, bypassing classification buckets
     const grouped = {};
     for (const email of emails) {
-      const key = (email.classification || "OTHER").toLowerCase();
+      let key;
+      if (email.escalation_triggered === 1) {
+        key = "escalation";
+      } else {
+        key = (email.classification || "OTHER").toLowerCase();
+      }
       if (grouped[key] === undefined) grouped[key] = [];
       grouped[key].push(email);
     }
@@ -218,7 +224,7 @@ router.post("/:id/retriage", requireAuth, (req, res) => {
       .get(req.params.id, req.tenant.id);
     if (!email) return res.status(404).json({ error: "Email not found" });
     db.prepare(
-      "UPDATE emails SET status = ?, classification = NULL, draft_reply = NULL WHERE id = ?",
+      "UPDATE emails SET status = ?, classification = NULL, draft_reply = NULL, escalation_triggered = 0, escalation_reason = NULL WHERE id = ?",
     ).run("pending", email.id);
     db.prepare(
       "INSERT INTO audit_logs (id, tenant_id, action, detail, ip) VALUES (?, ?, ?, ?, ?)",

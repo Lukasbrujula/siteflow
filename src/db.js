@@ -38,6 +38,8 @@ function initDb() {
       sentiment TEXT,
       urgency TEXT,
       confidence REAL,
+      escalation_triggered INTEGER DEFAULT 0,
+      escalation_reason TEXT,
       draft_reply TEXT,
       status TEXT DEFAULT 'pending',
       created_at INTEGER DEFAULT (unixepoch()),
@@ -69,6 +71,19 @@ function initDb() {
   // Migration: add confidence column for existing DBs (safe no-op if already present)
   try {
     db.exec("ALTER TABLE emails ADD COLUMN confidence REAL");
+  } catch (err) {
+    if (!err.message.includes("duplicate column name")) throw err;
+  }
+  // Migration: add escalation columns for existing DBs (safe no-op if already present)
+  try {
+    db.exec(
+      "ALTER TABLE emails ADD COLUMN escalation_triggered INTEGER DEFAULT 0",
+    );
+  } catch (err) {
+    if (!err.message.includes("duplicate column name")) throw err;
+  }
+  try {
+    db.exec("ALTER TABLE emails ADD COLUMN escalation_reason TEXT");
   } catch (err) {
     if (!err.message.includes("duplicate column name")) throw err;
   }
