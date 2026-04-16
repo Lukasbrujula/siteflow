@@ -87,6 +87,17 @@ function initDb() {
   } catch (err) {
     if (!err.message.includes("duplicate column name")) throw err;
   }
+  // Migration: add IMAP/SMTP port columns for onboarding
+  try {
+    db.exec("ALTER TABLE tenants ADD COLUMN imap_port INTEGER");
+  } catch (err) {
+    if (!err.message.includes("duplicate column name")) throw err;
+  }
+  try {
+    db.exec("ALTER TABLE tenants ADD COLUMN smtp_port INTEGER");
+  } catch (err) {
+    if (!err.message.includes("duplicate column name")) throw err;
+  }
   console.log("[db] Tables ready");
 }
 
