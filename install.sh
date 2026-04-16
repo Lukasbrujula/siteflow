@@ -1,90 +1,390 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
+INSTALL_DIR="/opt/siteflow"
+REPO_URL="https://github.com/Lukasbrujula/siteflow.git"
+
+# Restore terminal echo if script is interrupted during password entry
+trap 'stty echo 2>/dev/null' INT TERM EXIT
+
+echo ""
 echo "================================"
-echo " SiteFlow Installation"
+echo " SiteFlow Installer"
 echo "================================"
 echo ""
 
-# Check we are root
+# ── Root check ────────────────────────────
+
 if [ "$EUID" -ne 0 ]; then
-  echo "Please run as root"
+  echo "Error: This script must be run as root."
+  echo "  Run again with:  sudo bash install.sh"
   exit 1
 fi
 
-# Collect config
-read -p "Company domain (e.g. email.firma.de): " DOMAIN
-read -p "Admin email address: " ADMIN_EMAIL
-read -p "Company inbox (IMAP/SMTP user): " IMAP_USER
-read -s -p "Gmail app password: " IMAP_PASSWORD
-echo ""
-read -p "Siteware API token: " SITEWARE_TOKEN
+# ── Detect re-run ─────────────────────────
 
-# Generate secrets
-ENCRYPTION_KEY=$(openssl rand -hex 32)
-SESSION_SECRET=$(openssl rand -hex 32)
-
-echo ""
-echo "Installing dependencies..."
-apt update -qq && apt install -y -qq git nodejs npm caddy
-npm install -g pm2 > /dev/null
-
-echo "Setting up SiteFlow..."
-mkdir -p /opt/siteflow
-cd /opt/siteflow
-
-# Clone if not already cloned
-if [ ! -f package.json ]; then
-  git clone https://github.com/Lukasbrujula/siteware-frontend.git /tmp/siteflow-src
-  cp -r /tmp/siteflow-src/. .
+FRESH_INSTALL=true
+if [ -f "$INSTALL_DIR/package.json" ]; then
+  FRESH_INSTALL=false
+  echo "Existing installation found at $INSTALL_DIR."
+  echo "This will update the code and restart services."
+  echo "Your .env and data/ directory will not be changed."
+  echo ""
 fi
 
-npm install > /dev/null
+# ── Collect configuration (fresh install) ──
 
-# Write .env
-cat > .env << ENVEOF
-DOMAIN=$DOMAIN
-ADMIN_EMAIL=$ADMIN_EMAIL
-IMAP_HOST=imap.gmail.com
-IMAP_USER=$IMAP_USER
-IMAP_PASSWORD=$IMAP_PASSWORD
-SMTP_HOST=smtp.gmail.com
-SMTP_USER=$IMAP_USER
-SMTP_PASSWORD=$IMAP_PASSWORD
-SMTP_PORT=587
-SITEWARE_API_TOKEN=$SITEWARE_TOKEN
-SITEWARE_TRIAGE_AGENT_ID=69a793b549b400eda5ba1d28
-SITEWARE_REPLY_AGENT_ID=69a79a7474b96c80ef1a84e2
-ENCRYPTION_KEY=$ENCRYPTION_KEY
-SESSION_SECRET=$SESSION_SECRET
-PORT=3000
-NODE_ENV=production
-POLL_INTERVAL_MS=180000
-SESSION_DURATION_DAYS=7
-DATA_RETENTION_DAYS=90
-ENVEOF
+if [ "$FRESH_INSTALL" = true ]; then
+  echo "Enter the details for your SiteFlow installation."
+  echo "All fields are required."
+  echo ""
 
-echo "Copying frontend..."
-cp -r /tmp/siteflow-src/dist/* /opt/siteflow/public/ 2>/dev/null || true
+  # Domain
+  read -rp "Company domain (e.g. email.firma.de): " DOMAIN
+  while [ -z "${DOMAIN:-}" ]; do
+    echo "  Domain cannot be empty."
+    read -rp "Company domain: " DOMAIN
+  done
 
-echo "Starting services..."
-pm2 start ecosystem.config.js
-pm2 save
-pm2 startup systemd -u root --hp /root | tail -1 | bash
+  # Admin email
+  read -rp "Admin email address: " ADMIN_EMAIL
+  while [ -z "${ADMIN_EMAIL:-}" ]; do
+    echo "  Admin email cannot be empty."
+    read -rp "Admin email: " ADMIN_EMAIL
+  done
 
-echo "Configuring Caddy..."
-cat > /etc/caddy/Caddyfile << CADDY
-$DOMAIN {
+  # IMAP user
+  echo ""
+  echo "SiteFlow monitors one Gmail inbox via IMAP."
+  echo "You need the inbox email and a Gmail App Password."
+  echo "(Not your regular Gmail password — create one at"
+  echo " https://myaccount.google.com/apppasswords)"
+  echo ""
+  read -rp "Company inbox email (the address SiteFlow will monitor): " IMAP_USER
+  while [ -z "${IMAP_USER:-}" ]; do
+    echo "  Inbox email cannot be empty."
+    read -rp "Company inbox email: " IMAP_USER
+  done
+
+  # Gmail app password
+  while true; do
+    read -rs -p "Gmail app password (input is hidden): " IMAP_PASSWORD
+    echo ""
+    if [ -z "${IMAP_PASSWORD:-}" ]; then
+      echo "  Password cannot be empty."
+    else
+      break
+    fi
+  done
+
+  # Siteware API token
+  echo ""
+  read -rp "Siteware API token: " SITEWARE_TOKEN
+  while [ -z "${SITEWARE_TOKEN:-}" ]; do
+    echo "  Token cannot be empty."
+    read -rp "Siteware API token: " SITEWARE_TOKEN
+  done
+
+  # Agent IDs
+  echo ""
+  echo "You need two Siteware agent IDs (found in your Siteware"
+  echo "dashboard under Agents). One handles triage, one handles replies."
+  echo ""
+  read -rp "Triage agent ID: " TRIAGE_AGENT_ID
+  while [ -z "${TRIAGE_AGENT_ID:-}" ]; do
+    echo "  Triage agent ID cannot be empty."
+    read -rp "Triage agent ID: " TRIAGE_AGENT_ID
+  done
+
+  read -rp "Reply agent ID: " REPLY_AGENT_ID
+  while [ -z "${REPLY_AGENT_ID:-}" ]; do
+    echo "  Reply agent ID cannot be empty."
+    read -rp "Reply agent ID: " REPLY_AGENT_ID
+  done
+fi
+
+echo ""
+
+# ── Install Node.js 22.x ─────────────────
+
+echo "Checking Node.js..."
+NEED_NODE=true
+if command -v node &>/dev/null; then
+  NODE_MAJOR=$(node -v | cut -d. -f1 | tr -d 'v')
+  if [ "$NODE_MAJOR" -ge 22 ]; then
+    echo "  Node.js $(node -v) already installed."
+    NEED_NODE=false
+  else
+    echo "  Node.js $(node -v) found but v22+ is required."
+  fi
+fi
+
+if [ "$NEED_NODE" = true ]; then
+  echo "  Installing Node.js 22.x via NodeSource..."
+  apt-get install -y -qq curl > /dev/null 2>&1 || true
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash - > /dev/null 2>&1
+  apt-get install -y -qq nodejs
+  echo "  Installed Node.js $(node -v)."
+fi
+
+# ── System dependencies ──────────────────
+
+echo "Installing system packages..."
+apt-get update -qq > /dev/null 2>&1
+apt-get install -y -qq git caddy curl > /dev/null 2>&1
+
+echo "Installing PM2..."
+npm install -g pm2 > /dev/null 2>&1
+
+# ── Clone or update repository ───────────
+
+if [ "$FRESH_INSTALL" = true ]; then
+  echo "Cloning SiteFlow repository..."
+  rm -rf /tmp/siteflow-clone
+  git clone "$REPO_URL" /tmp/siteflow-clone
+  mkdir -p "$INSTALL_DIR"
+  cp -a /tmp/siteflow-clone/. "$INSTALL_DIR/"
+  rm -rf /tmp/siteflow-clone
+else
+  echo "Pulling latest changes..."
+  cd "$INSTALL_DIR"
+  git pull
+fi
+
+cd "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR/data"
+
+echo "Installing npm packages..."
+npm install > /dev/null 2>&1
+
+# ── Write .env helper ────────────────────
+
+write_env() {
+  {
+    printf '# SiteFlow configuration (generated by install.sh)\n'
+    printf 'PORT=3000\n'
+    printf 'NODE_ENV=production\n'
+    printf 'DOMAIN=%s\n' "$DOMAIN"
+    printf '\n'
+    printf '# Email polling (IMAP)\n'
+    printf 'IMAP_HOST=imap.gmail.com\n'
+    printf 'IMAP_USER=%s\n' "$IMAP_USER"
+    printf 'IMAP_PASSWORD=%s\n' "$IMAP_PASSWORD"
+    printf '\n'
+    printf '# Email sending (SMTP)\n'
+    printf 'SMTP_HOST=smtp.gmail.com\n'
+    printf 'SMTP_PORT=587\n'
+    printf 'SMTP_USER=%s\n' "$IMAP_USER"
+    printf 'SMTP_PASSWORD=%s\n' "$IMAP_PASSWORD"
+    printf '\n'
+    printf '# Admin\n'
+    printf 'ADMIN_EMAIL=%s\n' "$ADMIN_EMAIL"
+    printf '\n'
+    printf '# Siteware API\n'
+    printf 'SITEWARE_API_TOKEN=%s\n' "$SITEWARE_TOKEN"
+    printf 'SITEWARE_TRIAGE_TOKEN=%s\n' "$SITEWARE_TOKEN"
+    printf 'SITEWARE_REPLY_TOKEN=%s\n' "$SITEWARE_TOKEN"
+    printf 'SITEWARE_TRIAGE_AGENT_ID=%s\n' "$TRIAGE_AGENT_ID"
+    printf 'SITEWARE_REPLY_AGENT_ID=%s\n' "$REPLY_AGENT_ID"
+    printf 'SITEWARE_TRIAGE_MODE=passthrough\n'
+    printf 'SITEWARE_TRIAGE_MODEL=gpt-4.1\n'
+    printf '\n'
+    printf '# Security (auto-generated, do not share)\n'
+    printf 'ENCRYPTION_KEY=%s\n' "$ENCRYPTION_KEY"
+    printf 'SESSION_SECRET=%s\n' "$SESSION_SECRET"
+    printf '\n'
+    printf '# Tuning\n'
+    printf 'POLL_INTERVAL_MS=180000\n'
+    printf 'SESSION_DURATION_DAYS=7\n'
+    printf 'DATA_RETENTION_DAYS=90\n'
+  } > "$INSTALL_DIR/.env"
+  chmod 600 "$INSTALL_DIR/.env"
+}
+
+# ── Generate secrets and write .env ──────
+
+if [ "$FRESH_INSTALL" = true ]; then
+  echo "Generating secrets..."
+  ENCRYPTION_KEY=$(openssl rand -hex 32)
+  SESSION_SECRET=$(openssl rand -hex 32)
+
+  echo "Writing configuration..."
+  write_env
+fi
+
+# ── Validate IMAP credentials ────────────
+
+if [ "$FRESH_INSTALL" = true ]; then
+  echo ""
+  echo "Validating IMAP connection..."
+  IMAP_OK=false
+  IMAP_ATTEMPTS=0
+
+  while [ "$IMAP_OK" = false ] && [ "$IMAP_ATTEMPTS" -lt 3 ]; do
+    if node -e '
+      require("dotenv").config();
+      var Imap = require("imap-simple");
+      Imap.connect({
+        imap: {
+          user: process.env.IMAP_USER,
+          password: process.env.IMAP_PASSWORD,
+          host: process.env.IMAP_HOST || "imap.gmail.com",
+          port: 993,
+          tls: true,
+          tlsOptions: { rejectUnauthorized: false },
+          authTimeout: 10000
+        }
+      }).then(function(c) {
+        return c.openBox("INBOX").then(function() {
+          console.log("  IMAP connection successful.");
+          c.end();
+          process.exit(0);
+        });
+      }).catch(function(e) {
+        console.error("  IMAP connection failed: " + e.message);
+        process.exit(1);
+      });
+    '; then
+      IMAP_OK=true
+    else
+      IMAP_ATTEMPTS=$((IMAP_ATTEMPTS + 1))
+      if [ "$IMAP_ATTEMPTS" -lt 3 ]; then
+        echo ""
+        echo "  Could not connect to Gmail. Common causes:"
+        echo "    - Wrong app password (NOT your regular Gmail password)"
+        echo "    - IMAP not enabled in Gmail settings"
+        echo "    - Wrong email address"
+        echo ""
+        echo "  Re-enter credentials or press Ctrl+C to abort."
+        echo ""
+        read -rp "  Inbox email [${IMAP_USER}]: " NEW_USER
+        [ -n "${NEW_USER:-}" ] && IMAP_USER="$NEW_USER"
+
+        read -rs -p "  Gmail app password (hidden): " NEW_PASS
+        echo ""
+        [ -n "${NEW_PASS:-}" ] && IMAP_PASSWORD="$NEW_PASS"
+
+        write_env
+      fi
+    fi
+  done
+
+  if [ "$IMAP_OK" = false ]; then
+    echo ""
+    echo "  IMAP validation failed after 3 attempts."
+    echo "  Installation will continue, but email polling will NOT work"
+    echo "  until you fix the credentials in: $INSTALL_DIR/.env"
+    echo ""
+  fi
+fi
+
+# ── Validate Siteware API token ──────────
+
+if [ "$FRESH_INSTALL" = true ]; then
+  echo "Validating Siteware API token..."
+  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -m 10 \
+    -H "Authorization: Bearer $SITEWARE_TOKEN" \
+    "https://api.siteware.io/v1/api/agents" 2>/dev/null || echo "000")
+
+  if [ "$HTTP_CODE" = "200" ]; then
+    echo "  Siteware token is valid."
+  elif [ "$HTTP_CODE" = "000" ]; then
+    echo "  Warning: Could not reach Siteware API (network error or timeout)."
+    echo "  The token was saved but could not be verified."
+  else
+    echo "  Warning: Siteware API returned HTTP $HTTP_CODE."
+    echo "  The token may be invalid. Check your Siteware dashboard."
+    echo "  You can update it later in: $INSTALL_DIR/.env"
+  fi
+fi
+
+# ── Bootstrap admin account ──────────────
+
+if [ "$FRESH_INSTALL" = true ]; then
+  echo ""
+  echo "Creating admin account..."
+  node scripts/bootstrap-admin.js --email="$ADMIN_EMAIL"
+fi
+
+# ── Configure Caddy reverse proxy ────────
+
+if [ "$FRESH_INSTALL" = true ]; then
+  echo ""
+  echo "Configuring Caddy reverse proxy..."
+  cat > /etc/caddy/Caddyfile << CADDYEOF
+${DOMAIN} {
     reverse_proxy localhost:3000
 }
-CADDY
-systemctl restart caddy
+CADDYEOF
+  systemctl reload caddy 2>/dev/null || systemctl restart caddy
+fi
 
-echo "Bootstrapping admin..."
-node scripts/bootstrap-admin.js --email $ADMIN_EMAIL
+# ── Start PM2 services ──────────────────
+
+echo ""
+echo "Starting services..."
+if [ "$FRESH_INSTALL" = true ]; then
+  pm2 start ecosystem.config.js
+  pm2 save
+  pm2 startup systemd -u root --hp /root 2>/dev/null | tail -1 | bash 2>/dev/null || true
+else
+  pm2 restart app poller workflow jobs --update-env
+fi
+
+# ── Post-install health check ────────────
+
+echo ""
+echo "Waiting for services to start..."
+sleep 5
+
+echo "Running health check..."
+HEALTH=$(curl -s -m 10 http://localhost:3000/api/health 2>/dev/null || echo '{"status":"unreachable"}')
+STATUS=$(echo "$HEALTH" | node -e '
+  var d = "";
+  process.stdin.on("data", function(c) { d += c; });
+  process.stdin.on("end", function() {
+    try { console.log(JSON.parse(d).status); }
+    catch(e) { console.log("unknown"); }
+  });
+' 2>/dev/null || echo "unknown")
+
+if [ "$STATUS" = "ok" ]; then
+  echo "  Health: OK — all systems operational."
+elif [ "$STATUS" = "degraded" ]; then
+  echo "  Health: DEGRADED — system is running but some checks failed."
+  echo "  Details: $HEALTH"
+  echo "  Run 'pm2 logs' to investigate."
+else
+  echo "  Health: NOT OK — services may not have started correctly."
+  echo "  Details: $HEALTH"
+  echo "  Run 'pm2 logs' to investigate."
+fi
+
+# ── Summary ──────────────────────────────
 
 echo ""
 echo "================================"
-echo " Installation complete!"
-echo " Go to: https://$DOMAIN"
+if [ "$FRESH_INSTALL" = true ]; then
+  echo " Installation complete!"
+  echo ""
+  echo " Dashboard:  https://${DOMAIN}"
+  echo " Admin:      ${ADMIN_EMAIL}"
+  echo " Config:     ${INSTALL_DIR}/.env"
+  echo ""
+  echo " Useful commands:"
+  echo "   pm2 logs          View all service logs"
+  echo "   pm2 status        Check if services are running"
+  echo "   pm2 restart all   Restart everything"
+  echo "   curl localhost:3000/api/health"
+else
+  echo " Update complete!"
+  echo ""
+  echo " Config: ${INSTALL_DIR}/.env (unchanged)"
+  echo ""
+  echo " Useful commands:"
+  echo "   pm2 status"
+  echo "   pm2 logs"
+  echo "   curl localhost:3000/api/health"
+fi
 echo "================================"
+echo ""
