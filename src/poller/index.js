@@ -131,6 +131,22 @@ function extractBodies(rawSource) {
     return { bodyPlain, bodyHtml };
   }
 
+  const charsetMatch = headerSection.match(
+    /charset\s*=\s*["']?([^"';\s\r\n]+)/i,
+  );
+  const rawCharset = charsetMatch ? charsetMatch[1].toLowerCase() : "utf-8";
+  // windows-1252 mapped to latin1 — identical except 0x80-0x9F range
+  const charset =
+    rawCharset === "utf-8" || rawCharset === "utf8"
+      ? "utf-8"
+      : rawCharset === "iso-8859-1" ||
+          rawCharset === "latin1" ||
+          rawCharset === "iso8859-1" ||
+          rawCharset === "windows-1252" ||
+          rawCharset === "cp1252"
+        ? "latin1"
+        : "utf-8";
+
   const encMatch = headerSection.match(
     /^Content-Transfer-Encoding:\s*([^\r\n]+)/im,
   );
@@ -142,17 +158,27 @@ function extractBodies(rawSource) {
       decoded = Buffer.from(
         decoded.replace(/[\r\n\s]/g, ""),
         "base64",
-      ).toString("utf-8");
+      ).toString(charset);
     } catch (e) {
       decoded = bodySection;
     }
   } else if (encoding === "quoted-printable") {
-    decoded = decoded
-      .replace(/=\r\n/g, "")
-      .replace(/=\n/g, "")
-      .replace(/=([0-9A-Fa-f]{2})/g, (_, hex) =>
-        String.fromCharCode(parseInt(hex, 16)),
-      );
+    const stripped = decoded.replace(/=\r?\n/g, "");
+    const bytes = [];
+    let i = 0;
+    while (i < stripped.length) {
+      if (stripped[i] === "=" && i + 2 < stripped.length) {
+        const hex = stripped.substring(i + 1, i + 3);
+        if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
+          bytes.push(parseInt(hex, 16));
+          i += 3;
+          continue;
+        }
+      }
+      bytes.push(stripped.charCodeAt(i) & 0xff);
+      i++;
+    }
+    decoded = Buffer.from(bytes).toString(charset);
   }
 
   if (contentType === "text/plain")
