@@ -133,49 +133,68 @@ async function pollInbox() {
     const messages = await connection.search(searchCriteria, fetchOptions);
     console.log("[poller] Found " + messages.length + " new messages");
 
+    let processed = 0,
+      skipped = 0;
+
     for (const msg of messages) {
-      const fullPart = msg.parts.find((p) => p.which === "");
-      const rawSource = fullPart?.body || "";
+      let subject = "unknown";
+      try {
+        const fullPart = msg.parts.find((p) => p.which === "");
+        const rawSource = fullPart?.body || "";
 
-      const from = parseRawHeader(rawSource, "From");
-      const subject = parseRawHeader(rawSource, "Subject") || "(no subject)";
-      const dateStr = parseRawHeader(rawSource, "Date");
+        const from = parseRawHeader(rawSource, "From");
+        subject = parseRawHeader(rawSource, "Subject") || "(no subject)";
+        const dateStr = parseRawHeader(rawSource, "Date");
 
-      const { bodyPlain, bodyHtml } = extractBodies(rawSource);
-      const text = bodyPlain || stripHtml(bodyHtml) || "";
+        const { bodyPlain, bodyHtml } = extractBodies(rawSource);
+        const text = bodyPlain || stripHtml(bodyHtml) || "";
 
-      const messageId = crypto
-        .createHash("sha256")
-        .update(from + subject + dateStr)
-        .digest("hex");
+        const messageId = crypto
+          .createHash("sha256")
+          .update(from + subject + dateStr)
+          .digest("hex");
 
-      const existing = db
-        .prepare("SELECT id FROM emails WHERE message_id = ?")
-        .get(messageId);
-      if (existing) continue;
+        const existing = db
+          .prepare("SELECT id FROM emails WHERE message_id = ?")
+          .get(messageId);
+        if (existing) continue;
 
-      const tenant = db.prepare("SELECT id FROM tenants LIMIT 1").get();
-      if (!tenant) continue;
+        const tenant = db.prepare("SELECT id FROM tenants LIMIT 1").get();
+        if (!tenant) continue;
 
-      const emailId = crypto.randomUUID();
-      db.prepare(
-        `
-        INSERT INTO emails (id, tenant_id, message_id, from_address, subject, body, received_at, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      ).run(
-        emailId,
-        tenant.id,
-        messageId,
-        from,
-        subject,
-        text.substring(0, 5000),
-        Math.floor(Date.now() / 1000),
-        "pending",
-      );
+        const emailId = crypto.randomUUID();
+        db.prepare(
+          `
+          INSERT INTO emails (id, tenant_id, message_id, from_address, subject, body, received_at, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        ).run(
+          emailId,
+          tenant.id,
+          messageId,
+          from,
+          subject,
+          text.substring(0, 5000),
+          Math.floor(Date.now() / 1000),
+          "pending",
+        );
 
-      console.log("[poller] Saved: " + subject);
+        console.log("[poller] Saved: " + subject);
+        processed++;
+      } catch (msgErr) {
+        console.error(
+          "[poller] Skipped message (subject: " +
+            subject +
+            "): " +
+            msgErr.message,
+        );
+        skipped++;
+      }
     }
+
+    console.log(
+      "[poller] Processed " + processed + " messages, " + skipped + " skipped",
+    );
 
     connection.end();
   } catch (err) {
