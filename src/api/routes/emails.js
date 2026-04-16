@@ -183,4 +183,80 @@ router.post("/:id/archive", requireAuth, (req, res) => {
   }
 });
 
+// POST /api/emails/:id/reject — human rejects AI draft, archives with reason
+router.post("/:id/reject", requireAuth, (req, res) => {
+  try {
+    const email = db
+      .prepare("SELECT * FROM emails WHERE id = ? AND tenant_id = ?")
+      .get(req.params.id, req.tenant.id);
+    if (!email) return res.status(404).json({ error: "Email not found" });
+    db.prepare("UPDATE emails SET status = ? WHERE id = ?").run(
+      "archived",
+      email.id,
+    );
+    const reason = req.body?.reason || null;
+    db.prepare(
+      "INSERT INTO audit_logs (id, tenant_id, action, detail, ip) VALUES (?, ?, ?, ?, ?)",
+    ).run(
+      require("crypto").randomUUID(),
+      req.tenant.id,
+      "draft_rejected",
+      reason ? email.id + ": " + reason : email.id,
+      req.ip,
+    );
+    res.json({ message: "Draft rejected" });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to reject draft" });
+  }
+});
+
+// POST /api/emails/:id/retriage — reset to pending for reclassification
+router.post("/:id/retriage", requireAuth, (req, res) => {
+  try {
+    const email = db
+      .prepare("SELECT * FROM emails WHERE id = ? AND tenant_id = ?")
+      .get(req.params.id, req.tenant.id);
+    if (!email) return res.status(404).json({ error: "Email not found" });
+    db.prepare(
+      "UPDATE emails SET status = ?, classification = NULL, draft_reply = NULL WHERE id = ?",
+    ).run("pending", email.id);
+    db.prepare(
+      "INSERT INTO audit_logs (id, tenant_id, action, detail, ip) VALUES (?, ?, ?, ?, ?)",
+    ).run(
+      require("crypto").randomUUID(),
+      req.tenant.id,
+      "retriaged",
+      email.id,
+      req.ip,
+    );
+    res.json({ message: "Email queued for retriage" });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to queue retriage" });
+  }
+});
+
+// POST /api/emails/:id/unsubscribe — stub: unsubscribe from sender (not yet implemented)
+router.post("/:id/unsubscribe", requireAuth, (req, res) => {
+  try {
+    const email = db
+      .prepare("SELECT * FROM emails WHERE id = ? AND tenant_id = ?")
+      .get(req.params.id, req.tenant.id);
+    if (!email) return res.status(404).json({ error: "Email not found" });
+    db.prepare(
+      "INSERT INTO audit_logs (id, tenant_id, action, detail, ip) VALUES (?, ?, ?, ?, ?)",
+    ).run(
+      require("crypto").randomUUID(),
+      req.tenant.id,
+      "unsubscribe_requested",
+      email.id,
+      req.ip,
+    );
+    res
+      .status(501)
+      .json({ message: "Unsubscribe not yet implemented", status: "stub" });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to process unsubscribe" });
+  }
+});
+
 module.exports = router;
