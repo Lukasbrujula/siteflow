@@ -1,28 +1,38 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
+INSTALL_DIR="/opt/siteflow"
+
+echo ""
 echo "================================"
 echo " SiteFlow Update"
 echo "================================"
 
-cd /opt/siteflow
+if [ ! -d "$INSTALL_DIR" ]; then
+  echo "Error: $INSTALL_DIR does not exist. Run install.sh first."
+  exit 1
+fi
+cd "$INSTALL_DIR"
 
-echo "Pulling latest frontend..."
-rm -rf /tmp/siteflow-update
-git clone https://github.com/Lukasbrujula/siteware-frontend.git /tmp/siteflow-update
+if [ ! -f ".env" ]; then
+  echo "Error: .env is missing. Re-run install.sh or restore from backup."
+  exit 1
+fi
 
-echo "Updating frontend files..."
-cp -r /tmp/siteflow-update/dist/* /opt/siteflow/public/
+echo "Pulling latest changes..."
+git pull origin main
 
-echo "Updating backend..."
-cp -r /tmp/siteflow-update/src/* /opt/siteflow/src/
-npm install > /dev/null
+echo "Installing dependencies..."
+npm install > /dev/null 2>&1
 
 echo "Restarting services..."
-pm2 restart app --update-env
-pm2 restart poller --update-env
-pm2 restart workflow --update-env
-pm2 restart jobs --update-env
+pm2 restart app poller workflow jobs --update-env
+
+echo "Waiting for services to start..."
+sleep 5
+
+HEALTH=$(curl -s -m 10 http://localhost:3000/api/health 2>/dev/null || echo '{"status":"unreachable"}')
+echo "Health: $HEALTH"
 
 echo ""
 echo "================================"
