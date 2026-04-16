@@ -28,6 +28,53 @@ function parseRawHeader(rawSource, name) {
   return match[1].replace(/\r?\n[ \t]+/g, " ").trim();
 }
 
+function decodeMimeWords(str) {
+  if (!str || !str.includes("=?")) return str;
+  // Collapse whitespace between consecutive encoded words (RFC 2047 §6.2)
+  let prev = null;
+  while (prev !== str) {
+    prev = str;
+    str = str.replace(
+      /(=\?[^?]+\?[BQbq]\?[^?]*\?=)\s+(=\?[^?]+\?[BQbq]\?[^?]*\?=)/g,
+      "$1$2",
+    );
+  }
+  return str.replace(
+    /=\?([^?]+)\?([BQbq])\?([^?]*)\?=/g,
+    (match, charset, encoding, encoded) => {
+      try {
+        const cs = charset.toLowerCase().replace(/[^a-z0-9]/g, "");
+        let nodeEncoding;
+        if (cs === "utf8") {
+          nodeEncoding = "utf8";
+        } else if (
+          cs === "iso88591" ||
+          cs === "latin1" ||
+          cs === "windows1252"
+        ) {
+          nodeEncoding = "latin1";
+        } else if (cs === "usascii" || cs === "ascii") {
+          nodeEncoding = "ascii";
+        } else {
+          nodeEncoding = "utf8";
+        }
+        if (encoding.toUpperCase() === "B") {
+          return Buffer.from(encoded, "base64").toString(nodeEncoding);
+        }
+        // Q encoding: _ → space, =XX → byte
+        const binaryStr = encoded
+          .replace(/_/g, "\x20")
+          .replace(/=([0-9A-Fa-f]{2})/g, (_, hex) =>
+            String.fromCharCode(parseInt(hex, 16)),
+          );
+        return Buffer.from(binaryStr, "binary").toString(nodeEncoding);
+      } catch (e) {
+        return match;
+      }
+    },
+  );
+}
+
 function stripHtml(html) {
   return html
     .replace(/<style[\s\S]*?<\/style>/gi, "")
@@ -159,6 +206,9 @@ async function pollInbox() {
           .get(messageId);
         if (existing) continue;
 
+        const decodedFrom = decodeMimeWords(from);
+        const decodedSubject = decodeMimeWords(subject);
+
         const tenant = db.prepare("SELECT id FROM tenants LIMIT 1").get();
         if (!tenant) continue;
 
@@ -172,14 +222,14 @@ async function pollInbox() {
           emailId,
           tenant.id,
           messageId,
-          from,
-          subject,
+          decodedFrom,
+          decodedSubject,
           text.substring(0, 5000),
           Math.floor(Date.now() / 1000),
           "pending",
         );
 
-        console.log("[poller] Saved: " + subject);
+        console.log("[poller] Saved: " + decodedSubject);
         processed++;
       } catch (msgErr) {
         console.error(
