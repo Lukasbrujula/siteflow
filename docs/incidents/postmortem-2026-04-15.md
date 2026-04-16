@@ -24,23 +24,23 @@ Total resolution time once we sat down to fix it: about 90 minutes including mis
 
 ## Timeline
 
-| When | What |
-|---|---|
-| ~April 9 | Last known successful end-to-end processing. The `siteflow.db` main file's mtime is from this date. |
-| Sometime April 9–15 | Someone runs `rm` on `siteflow.db-wal` or `-shm` while the poller process is running. The poller's open file descriptors keep pointing at the now-deleted inodes. |
-| Sometime April 9–15 | Commit `073ab04 chore: scrub credentials from .env — use placeholders` is pushed to the repo. |
+| When                | What                                                                                                                                                                                                             |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ~April 9            | Last known successful end-to-end processing. The `siteflow.db` main file's mtime is from this date.                                                                                                              |
+| Sometime April 9–15 | Someone runs `rm` on `siteflow.db-wal` or `-shm` while the poller process is running. The poller's open file descriptors keep pointing at the now-deleted inodes.                                                |
+| Sometime April 9–15 | Commit `073ab04 chore: scrub credentials from .env — use placeholders` is pushed to the repo.                                                                                                                    |
 | Sometime April 9–15 | A `git pull` is run on the server. `.env` on disk is overwritten with placeholder values. PM2 processes keep running on their in-memory environment from before the pull, so nothing visibly breaks immediately. |
-| Sometime April 9–15 | Siteware token is rotated (likely by Andreas as part of normal hygiene). Old token now returns 403 from Siteware API. |
-| April 15, ~21:00 | Lukas notices the poller logs "Saved" but rows don't appear. Starts investigation. |
-| April 15, ~22:00 | Code-path analysis (via Claude Code) rules out the four most likely hypotheses (silent `continue`, hash collision, FK mismatch, transaction issues). All proven impossible by literal code reading. |
-| April 15, ~22:30 | Pivot to environmental investigation. `lsof` reveals stale `(deleted)` file handles on `.db-wal` and `.db-shm`. |
-| April 15, ~22:45 | `pm2 restart poller` clears stale handles. Test confirms INSERT now persists. But no new emails arriving — IMAP also broken. |
-| April 15, ~22:50 | `grep` of `.env` reveals all credentials are placeholders. `git log` shows the scrub commit. New Gmail App Password generated. |
-| April 15, ~23:00 | New `.env` written. All processes restarted. Poller succeeds, picks up 17 emails including two test emails sent earlier. |
-| April 15, ~23:05 | Workflow now fails on every email with `Triage passthrough 403`. Siteware token is dead. |
-| April 15, ~23:10 | New Siteware key generated with both agents allowlisted. Updated in `.env`. Both tokens verified with curl. |
-| April 15, ~23:15 | First sed on Reply token didn't take (operator error, copy-paste hiccup). Caught by sha256sum comparison. Re-applied. |
-| April 15, ~23:20 | Full pipeline working end-to-end. Status counts: 20 archived, 6 draft, 0 error. Test emails A and B both processed correctly. |
+| Sometime April 9–15 | Siteware token is rotated (likely by Andreas as part of normal hygiene). Old token now returns 403 from Siteware API.                                                                                            |
+| April 15, ~21:00    | Lukas notices the poller logs "Saved" but rows don't appear. Starts investigation.                                                                                                                               |
+| April 15, ~22:00    | Code-path analysis (via Claude Code) rules out the four most likely hypotheses (silent `continue`, hash collision, FK mismatch, transaction issues). All proven impossible by literal code reading.              |
+| April 15, ~22:30    | Pivot to environmental investigation. `lsof` reveals stale `(deleted)` file handles on `.db-wal` and `.db-shm`.                                                                                                  |
+| April 15, ~22:45    | `pm2 restart poller` clears stale handles. Test confirms INSERT now persists. But no new emails arriving — IMAP also broken.                                                                                     |
+| April 15, ~22:50    | `grep` of `.env` reveals all credentials are placeholders. `git log` shows the scrub commit. New Gmail App Password generated.                                                                                   |
+| April 15, ~23:00    | New `.env` written. All processes restarted. Poller succeeds, picks up 17 emails including two test emails sent earlier.                                                                                         |
+| April 15, ~23:05    | Workflow now fails on every email with `Triage passthrough 403`. Siteware token is dead.                                                                                                                         |
+| April 15, ~23:10    | New Siteware key generated with both agents allowlisted. Updated in `.env`. Both tokens verified with curl.                                                                                                      |
+| April 15, ~23:15    | First sed on Reply token didn't take (operator error, copy-paste hiccup). Caught by sha256sum comparison. Re-applied.                                                                                            |
+| April 15, ~23:20    | Full pipeline working end-to-end. Status counts: 20 archived, 6 draft, 0 error. Test emails A and B both processed correctly.                                                                                    |
 
 ---
 
@@ -62,7 +62,7 @@ For SQLite in WAL mode, the writer process appends to `<dbname>.db-wal`. Other c
 
 The processes didn't fail immediately because Linux processes carry their environment in memory — they don't re-read `.env` unless restarted. So the bug was latent until the next `pm2 restart`, which is exactly what happened during this troubleshooting session.
 
-**Why it survived undetected:** The same in-memory env protection that hid the problem also meant nobody noticed. The first thing that exposed it was *us*, when we restarted the poller to fix bug #1.
+**Why it survived undetected:** The same in-memory env protection that hid the problem also meant nobody noticed. The first thing that exposed it was _us_, when we restarted the poller to fix bug #1.
 
 ### Root cause 3: API tokens with no monitoring
 
@@ -74,7 +74,7 @@ The Siteware tokens died at some point and nobody was alerted. Same as bug #2, t
 
 1. **Three bugs stacked.** Fixing #1 immediately surfaced #2. Fixing #2 immediately surfaced #3. Each fix felt like "we made it worse" until the next layer was visible.
 2. **The most prominent symptom (Saved logs but no rows) had no plausible code-path explanation.** A careful code reading by Claude Code ruled out every named hypothesis. This was correct — the bug was environmental, not in the code at all. But it took time to accept that.
-3. **The "ghost" PM2 processes.** Until we restarted, the poller was occasionally succeeding (we saw "Saved" lines in the log). That made it look like the code was *almost* working. In reality, those successes were writing to deleted files and the credentials being used were stale in-memory values from before the `.env` scrub.
+3. **The "ghost" PM2 processes.** Until we restarted, the poller was occasionally succeeding (we saw "Saved" lines in the log). That made it look like the code was _almost_ working. In reality, those successes were writing to deleted files and the credentials being used were stale in-memory values from before the `.env` scrub.
 
 ---
 
