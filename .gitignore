@@ -3,3 +3,8 @@ node_modules/
 data/
 *.tar.gz
 write_*.py
+.env
+data/
+node_modules/
+*.log
+*.backup
