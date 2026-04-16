@@ -37,6 +37,7 @@ function initDb() {
       classification TEXT,
       sentiment TEXT,
       urgency TEXT,
+      confidence REAL,
       draft_reply TEXT,
       status TEXT DEFAULT 'pending',
       created_at INTEGER DEFAULT (unixepoch()),
@@ -65,6 +66,12 @@ function initDb() {
       created_at INTEGER DEFAULT (unixepoch())
     );
   `);
+  // Migration: add confidence column for existing DBs (safe no-op if already present)
+  try {
+    db.exec("ALTER TABLE emails ADD COLUMN confidence REAL");
+  } catch (err) {
+    if (!err.message.includes("duplicate column name")) throw err;
+  }
   console.log("[db] Tables ready");
 }
 

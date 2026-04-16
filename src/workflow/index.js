@@ -239,12 +239,13 @@ async function processEmail(email) {
     console.log("[workflow] Draft generated, length=" + draftReply.length);
 
     db.prepare(
-      "UPDATE emails SET status = ?, classification = ?, sentiment = ?, urgency = ?, draft_reply = ?, subject = COALESCE(?, subject) WHERE id = ?",
+      "UPDATE emails SET status = ?, classification = ?, sentiment = ?, urgency = ?, confidence = ?, draft_reply = ?, subject = COALESCE(?, subject) WHERE id = ?",
     ).run(
       "draft",
       classification,
       sentiment,
       urgency,
+      triage.confidence ?? null,
       draftReply,
       draftSubject,
       email.id,

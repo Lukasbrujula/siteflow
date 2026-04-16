@@ -24,7 +24,7 @@ router.get("/", requireAuth, (req, res) => {
   try {
     const { status, limit = 50, offset = 0 } = req.query;
     let query =
-      "SELECT id, from_address, subject, received_at, classification, sentiment, urgency, status, created_at FROM emails WHERE tenant_id = ?";
+      "SELECT id, from_address, subject, body, draft_reply, received_at, classification, sentiment, urgency, confidence, status, created_at FROM emails WHERE tenant_id = ?";
     const params = [req.tenant.id];
     if (status) {
       query += " AND status = ?";
@@ -100,12 +100,11 @@ router.post("/:id/send", requireAuth, async (req, res) => {
     if (!email.draft_reply)
       return res.status(400).json({ error: "No draft to send" });
 
-    // Fix 2: Reject if unfilled placeholders remain
+    // Soft warning if unfilled placeholders remain — user can still send
+    let placeholderWarning = null;
     if (/\[BITTE ERGÄNZEN:[^\]]*\]/.test(email.draft_reply)) {
-      return res.status(422).json({
-        error:
-          "E-Mail enthält noch nicht ausgefüllte Platzhalter ([BITTE ERGÄNZEN: …]). Bitte zuerst ergänzen.",
-      });
+      placeholderWarning =
+        "E-Mail enthält noch nicht ausgefüllte Platzhalter ([BITTE ERGÄNZEN: …]).";
     }
 
     // Fix 1: Strip draft markers and replace signature placeholder
@@ -160,7 +159,7 @@ router.post("/:id/send", requireAuth, async (req, res) => {
       req.ip,
     );
 
-    res.json({ message: "Email sent" });
+    res.json({ message: "Email sent", warning: placeholderWarning });
   } catch (err) {
     console.error("[emails] send error:", err);
     res.status(500).json({ error: "Failed to send email" });
