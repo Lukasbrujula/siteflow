@@ -87,8 +87,9 @@ if [ "$FRESH_INSTALL" = true ]; then
 
   # Agent IDs
   echo ""
-  echo "You need two Siteware agent IDs (found in your Siteware"
-  echo "dashboard under Agents). One handles triage, one handles replies."
+  echo "You need three Siteware agent IDs (found in your Siteware"
+  echo "dashboard under Agents). One handles triage, one handles replies,"
+  echo "and one handles tone analysis."
   echo ""
   read -rp "Triage agent ID: " TRIAGE_AGENT_ID
   while [ -z "${TRIAGE_AGENT_ID:-}" ]; do
@@ -100,6 +101,12 @@ if [ "$FRESH_INSTALL" = true ]; then
   while [ -z "${REPLY_AGENT_ID:-}" ]; do
     echo "  Reply agent ID cannot be empty."
     read -rp "Reply agent ID: " REPLY_AGENT_ID
+  done
+
+  read -rp "Enter your Siteware Tone Analysis Agent ID (SITEWARE_TONE_AGENT_ID): " TONE_AGENT_ID
+  while [ -z "${TONE_AGENT_ID:-}" ]; do
+    echo "  Tone agent ID cannot be empty."
+    read -rp "Enter your Siteware Tone Analysis Agent ID (SITEWARE_TONE_AGENT_ID): " TONE_AGENT_ID
   done
 fi
 
@@ -186,6 +193,7 @@ write_env() {
     printf 'SITEWARE_REPLY_TOKEN=%s\n' "$SITEWARE_TOKEN"
     printf 'SITEWARE_TRIAGE_AGENT_ID=%s\n' "$TRIAGE_AGENT_ID"
     printf 'SITEWARE_REPLY_AGENT_ID=%s\n' "$REPLY_AGENT_ID"
+    printf 'SITEWARE_TONE_AGENT_ID=%s\n' "$TONE_AGENT_ID"
     printf 'SITEWARE_TRIAGE_MODE=passthrough\n'
     printf 'SITEWARE_TRIAGE_MODEL=gpt-4.1\n'
     printf '\n'
