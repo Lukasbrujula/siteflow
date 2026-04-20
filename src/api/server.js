@@ -208,6 +208,74 @@ app.post("/api/onboarding/test-connection", async (req, res) => {
   }
 });
 
+app.post("/api/onboarding/validate-siteware", async (req, res) => {
+  const body = req.body || {};
+  const token = typeof body.token === "string" ? body.token.trim() : "";
+  const triageAgentId =
+    typeof body.triageAgentId === "string" ? body.triageAgentId.trim() : "";
+  const replyAgentId =
+    typeof body.replyAgentId === "string" ? body.replyAgentId.trim() : "";
+  const toneAgentId =
+    typeof body.toneAgentId === "string" ? body.toneAgentId.trim() : "";
+
+  if (
+    token === "" ||
+    triageAgentId === "" ||
+    replyAgentId === "" ||
+    toneAgentId === ""
+  ) {
+    res.status(422).json({ success: false, error: "All fields required" });
+    return;
+  }
+
+  try {
+    const result = await new Promise((resolve) => {
+      const payload = JSON.stringify({ model: "gpt-4.1", input: "test" });
+      const timer = setTimeout(() => {
+        req_sw.destroy();
+        resolve({ status: 0, error: "timeout" });
+      }, 10000);
+
+      const req_sw = https.request(
+        {
+          hostname: "api.siteware.io",
+          path: "/v1/api/proxy/openai/v1/responses",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer " + token,
+            "Content-Length": Buffer.byteLength(payload),
+          },
+        },
+        (resp) => {
+          clearTimeout(timer);
+          resp.resume();
+          resolve({ status: resp.statusCode });
+        },
+      );
+      req_sw.on("error", () => {
+        clearTimeout(timer);
+        resolve({ status: 0, error: "network" });
+      });
+      req_sw.write(payload);
+      req_sw.end();
+    });
+
+    if (result.status === 200) {
+      res.json({ success: true });
+      return;
+    }
+    if (result.status === 401 || result.status === 403) {
+      res.json({ success: false, error: "Invalid Siteware API token" });
+      return;
+    }
+    res.json({ success: false, error: "Could not reach Siteware API" });
+  } catch (err) {
+    console.error("[onboarding] validate-siteware error:", err);
+    res.json({ success: false, error: "Could not reach Siteware API" });
+  }
+});
+
 app.post("/api/onboarding/scan-sent", async (req, res) => {
   const body = req.body || {};
   const errors = [];
