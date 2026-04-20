@@ -18,9 +18,9 @@ const SENT_FOLDER_CANDIDATES = [
 
 const CONNECTION_TIMEOUT_MS = 30000;
 const MAX_BODY_LENGTH = 5000;
-const INITIAL_LOOKBACK_DAYS = 30;
+const INITIAL_LOOKBACK_DAYS = 180;
 const EXTENDED_LOOKBACK_DAYS = 365;
-const MIN_DIVERSE_EMAILS = 5;
+const MIN_DIVERSE_EMAILS = 20;
 const INITIAL_FETCH_LIMIT = 100;
 const FINAL_CAP = 10;
 const MAX_PER_RECIPIENT = 5;
@@ -465,7 +465,7 @@ async function scanSentEmails(config) {
       markSeen: false,
     };
 
-    // First pass: 30 days
+    // First pass: initial lookback window
     let sinceDate = new Date();
     sinceDate.setDate(sinceDate.getDate() - INITIAL_LOOKBACK_DAYS);
 
@@ -481,8 +481,13 @@ async function scanSentEmails(config) {
         " messages",
     );
 
-    // Expand to 365 days if too few results
+    // Expand to extended window if too few results
     if (messages.length < MIN_DIVERSE_EMAILS) {
+      console.log(
+        "[imap-scan] Extending lookback to " +
+          EXTENDED_LOOKBACK_DAYS +
+          " days due to low count",
+      );
       sinceDate = new Date();
       sinceDate.setDate(sinceDate.getDate() - EXTENDED_LOOKBACK_DAYS);
       messages = await connection.search([["SINCE", sinceDate]], fetchOptions);
