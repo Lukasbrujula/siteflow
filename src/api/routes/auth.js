@@ -133,11 +133,22 @@ router.get("/me", (req, res) => {
   if (!session) return res.status(401).json({ error: "Session expired" });
 
   const tenant = db
-    .prepare("SELECT id, email, role FROM tenants WHERE id = ?")
+    .prepare(
+      "SELECT id, email, role, imap_host, tone_profile FROM tenants WHERE id = ?",
+    )
     .get(session.tenant_id);
   if (!tenant) return res.status(401).json({ error: "Account not found" });
 
-  res.json({ tenant });
+  const onboarded = Boolean(tenant.imap_host) && Boolean(tenant.tone_profile);
+
+  res.json({
+    tenant: {
+      id: tenant.id,
+      email: tenant.email,
+      role: tenant.role,
+      onboarded,
+    },
+  });
 });
 
 module.exports = router;
