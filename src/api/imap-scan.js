@@ -23,7 +23,8 @@ const EXTENDED_LOOKBACK_DAYS = 365;
 const MIN_DIVERSE_EMAILS = 5;
 const INITIAL_FETCH_LIMIT = 100;
 const FINAL_CAP = 10;
-const MAX_PER_RECIPIENT = 2;
+const MAX_PER_RECIPIENT = 5;
+const MIN_EMAILS_AFTER_FILTER = 5;
 
 // ---------------------------------------------------------------------------
 // Config
@@ -149,7 +150,9 @@ function filterSelfSent(emails, userEmail) {
 function deduplicateBySubject(emails) {
   const seen = new Set();
   return emails.filter((e) => {
-    const key = normalizeSubject(e.subject).toLowerCase();
+    const subjectKey = (e.subject || "").trim().toLowerCase();
+    const recipientKey = (e.toAddresses[0] || "").toLowerCase();
+    const key = subjectKey + "|" + recipientKey;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -526,19 +529,51 @@ async function scanSentEmails(config) {
       };
     });
 
-    // Apply diversity filters
-    let filtered = filterForwarded(envelopes);
-    filtered = filterSelfSent(filtered, config.user);
-    filtered = deduplicateBySubject(filtered);
-    filtered = deduplicateByRecipient(filtered, MAX_PER_RECIPIENT);
-
+    // Apply diversity filters with per-stage logging
+    const afterForwarded = filterForwarded(envelopes);
     console.log(
-      "[imap-scan] Diversity filter: " +
+      "[imap-scan] After filterForwarded: " +
         envelopes.length +
-        " fetched → " +
-        filtered.length +
-        " after filtering",
+        " → " +
+        afterForwarded.length,
     );
+
+    const afterSelfSent = filterSelfSent(afterForwarded, config.user);
+    console.log(
+      "[imap-scan] After filterSelfSent: " +
+        afterForwarded.length +
+        " → " +
+        afterSelfSent.length,
+    );
+
+    const afterSubject = deduplicateBySubject(afterSelfSent);
+    console.log(
+      "[imap-scan] After deduplicateBySubject: " +
+        afterSelfSent.length +
+        " → " +
+        afterSubject.length,
+    );
+
+    const afterRecipient = deduplicateByRecipient(
+      afterSubject,
+      MAX_PER_RECIPIENT,
+    );
+    console.log(
+      "[imap-scan] After deduplicateByRecipient: " +
+        afterSubject.length +
+        " → " +
+        afterRecipient.length,
+    );
+
+    let filtered = afterRecipient;
+    if (afterRecipient.length < MIN_EMAILS_AFTER_FILTER) {
+      filtered = filterSelfSent(envelopes, config.user);
+      console.log(
+        "[imap-scan] Fallback triggered: using pre-filter set (" +
+          filtered.length +
+          " emails)",
+      );
+    }
 
     // Cap at final limit
     const selected = filtered.slice(0, FINAL_CAP);
