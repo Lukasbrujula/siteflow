@@ -252,8 +252,32 @@ async function processEmail(email) {
     }
 
     const draft = await callReplyAgent(email, triage);
-    const draftReply = draft.body_plain || draft.body_html || "";
+    let draftReply = draft.body_plain || draft.body_html || "";
     const draftSubject = draft.subject || email.subject || "";
+    // TODO: Root cause is in the Siteware Reply agent's system prompt — it emits
+    // [SIGNATUR EINFÜGEN] literally instead of substituting the employeesignature
+    // taskSetting we pass. Until that prompt is fixed upstream, substitute client-side.
+    const tenantRowForSig = db
+      .prepare("SELECT tone_profile FROM tenants WHERE id = ?")
+      .get(email.tenant_id);
+    let signature = "";
+    try {
+      const tp =
+        tenantRowForSig && tenantRowForSig.tone_profile
+          ? JSON.parse(tenantRowForSig.tone_profile)
+          : {};
+      signature = tp.email_signature || "";
+    } catch (e) {}
+    if (signature) {
+      const before = draftReply;
+      draftReply = draftReply.replace(
+        /\[SIGNATUR EINF(Ü|UE)GEN\]/gi,
+        signature,
+      );
+      if (before !== draftReply) {
+        console.log("[workflow] Signature placeholder replaced");
+      }
+    }
     console.log("[workflow] Draft generated, length=" + draftReply.length);
 
     db.prepare(
