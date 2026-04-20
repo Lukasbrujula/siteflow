@@ -37,6 +37,9 @@ function buildImapConfig(config) {
       host: config.host,
       port: config.port || 993,
       tls: config.tls !== false,
+      tlsOptions: {
+        servername: config.host,
+      },
       authTimeout: CONNECTION_TIMEOUT_MS,
     },
   };
