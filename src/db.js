@@ -40,6 +40,7 @@ function initDb() {
       confidence REAL,
       escalation_triggered INTEGER DEFAULT 0,
       escalation_reason TEXT,
+      reasoning TEXT,
       draft_reply TEXT,
       status TEXT DEFAULT 'pending',
       created_at INTEGER DEFAULT (unixepoch()),
@@ -84,6 +85,12 @@ function initDb() {
   }
   try {
     db.exec("ALTER TABLE emails ADD COLUMN escalation_reason TEXT");
+  } catch (err) {
+    if (!err.message.includes("duplicate column name")) throw err;
+  }
+  // Migration: add triage reasoning column (persists Triage agent's reasoning field)
+  try {
+    db.exec("ALTER TABLE emails ADD COLUMN reasoning TEXT");
   } catch (err) {
     if (!err.message.includes("duplicate column name")) throw err;
   }

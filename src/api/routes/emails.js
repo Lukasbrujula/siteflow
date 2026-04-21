@@ -24,7 +24,7 @@ router.get("/", requireAuth, (req, res) => {
   try {
     const { status, limit = 50, offset = 0 } = req.query;
     let query =
-      "SELECT id, from_address, subject, body, draft_reply, received_at, classification, sentiment, urgency, confidence, escalation_triggered, escalation_reason, status, created_at FROM emails WHERE tenant_id = ?";
+      "SELECT id, from_address, subject, body, draft_reply, received_at, classification, sentiment, urgency, confidence, escalation_triggered, escalation_reason, reasoning, status, created_at FROM emails WHERE tenant_id = ?";
     const params = [req.tenant.id];
     if (status) {
       query += " AND status = ?";
@@ -32,7 +32,11 @@ router.get("/", requireAuth, (req, res) => {
     }
     query += " ORDER BY received_at DESC LIMIT ? OFFSET ?";
     params.push(parseInt(limit), parseInt(offset));
-    const emails = db.prepare(query).all(...params);
+    const rows = db.prepare(query).all(...params);
+    const emails = rows.map((row) => ({
+      ...row,
+      preview: (row.body || "").replace(/\s+/g, " ").slice(0, 200),
+    }));
 
     // Group by classification for frontend store compatibility
     // Escalated emails route to "escalation" key, bypassing classification buckets
