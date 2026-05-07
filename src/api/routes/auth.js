@@ -142,12 +142,15 @@ router.get("/me", (req, res) => {
 
   const tenant = db
     .prepare(
-      "SELECT id, email, role, imap_host, tone_profile FROM tenants WHERE id = ?",
+      "SELECT id, email, role, tone_profile FROM tenants WHERE id = ?",
     )
     .get(session.tenant_id);
   if (!tenant) return res.status(401).json({ error: "Account not found" });
 
-  const onboarded = Boolean(tenant.imap_host) && Boolean(tenant.tone_profile);
+  const hasActiveInbox = db
+    .prepare("SELECT 1 FROM inboxes WHERE tenant_id = ? AND is_active = 1 LIMIT 1")
+    .get(tenant.id);
+  const onboarded = Boolean(hasActiveInbox) && Boolean(tenant.tone_profile);
 
   res.json({
     tenant: {
