@@ -105,6 +105,81 @@ function initDb() {
   } catch (err) {
     if (!err.message.includes("duplicate column name")) throw err;
   }
+  // MI-01: inboxes table + emails.inbox_id for multi-inbox support
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS inboxes (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      email TEXT NOT NULL,
+      label TEXT NOT NULL,
+      imap_host TEXT,
+      imap_port INTEGER,
+      imap_user TEXT,
+      imap_password_enc TEXT,
+      smtp_host TEXT,
+      smtp_port INTEGER,
+      smtp_user TEXT,
+      smtp_password_enc TEXT,
+      is_active INTEGER DEFAULT 1,
+      last_polled_at INTEGER,
+      last_poll_error TEXT,
+      created_at INTEGER DEFAULT (unixepoch()),
+      UNIQUE(tenant_id, email),
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_inboxes_tenant_active ON inboxes(tenant_id, is_active);
+  `);
+  try {
+    db.exec("ALTER TABLE emails ADD COLUMN inbox_id TEXT");
+  } catch (err) {
+    if (!err.message.includes("duplicate column name")) throw err;
+  }
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_emails_inbox ON emails(inbox_id)",
+  );
+  const tenantsToMigrate = db
+    .prepare(
+      `SELECT t.id, t.email, t.imap_host, t.imap_port, t.imap_user, t.imap_password_enc,
+              t.smtp_host, t.smtp_port, t.smtp_user, t.smtp_password_enc
+       FROM tenants t
+       WHERE t.imap_host IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM inboxes WHERE tenant_id = t.id)`,
+    )
+    .all();
+  const insertInbox = db.prepare(
+    `INSERT INTO inboxes
+       (id, tenant_id, email, label, imap_host, imap_port, imap_user, imap_password_enc,
+        smtp_host, smtp_port, smtp_user, smtp_password_enc)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  db.transaction((tenants) => {
+    for (const t of tenants) {
+      const label = t.email.split("@")[0] || "primary";
+      insertInbox.run(
+        t.id,
+        t.id,
+        t.imap_user || t.email,
+        label,
+        t.imap_host,
+        t.imap_port,
+        t.imap_user,
+        t.imap_password_enc,
+        t.smtp_host,
+        t.smtp_port,
+        t.smtp_user,
+        t.smtp_password_enc,
+      );
+    }
+  })(tenantsToMigrate);
+  db.exec(
+    `UPDATE emails
+     SET inbox_id = (
+       SELECT id FROM inboxes
+       WHERE tenant_id = emails.tenant_id
+       ORDER BY created_at ASC LIMIT 1
+     )
+     WHERE inbox_id IS NULL AND tenant_id IS NOT NULL`,
+  );
   console.log("[db] Tables ready");
 }
 
