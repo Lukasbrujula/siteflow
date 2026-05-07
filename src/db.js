@@ -137,6 +137,16 @@ function initDb() {
   db.exec(
     "CREATE INDEX IF NOT EXISTS idx_emails_inbox ON emails(inbox_id)",
   );
+  // SH-02: indexes on hot query columns (status filter, tenant+status composite, sort)
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_emails_status ON emails(status)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_emails_tenant_status ON emails(tenant_id, status)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_emails_received_at ON emails(received_at)",
+  );
   const tenantsToMigrate = db
     .prepare(
       `SELECT t.id, t.email, t.imap_host, t.imap_port, t.imap_user, t.imap_password_enc,

@@ -17,7 +17,18 @@ const {
 } = require("./imap-scan");
 
 const app = express();
-app.use(cors());
+const _corsOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)
+  : [];
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (_corsOrigins.includes(origin)) return callback(null, true);
+      callback(new Error("CORS: origin not allowed"));
+    },
+  }),
+);
 app.use(express.json({ limit: "2mb" }));
 app.use(cookieParser());
 app.use("/api/auth", require("./routes/auth"));

@@ -200,6 +200,7 @@ write_env() {
     printf '# Security (auto-generated, do not share)\n'
     printf 'ENCRYPTION_KEY=%s\n' "$ENCRYPTION_KEY"
     printf 'SESSION_SECRET=%s\n' "$SESSION_SECRET"
+    printf 'ALLOWED_ORIGINS=https://%s\n' "$DOMAIN"
     printf '\n'
     printf '# Tuning\n'
     printf 'POLL_INTERVAL_MS=180000\n'
