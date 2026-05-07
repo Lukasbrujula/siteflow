@@ -25,13 +25,19 @@ router.get("/", requireAuth, (req, res) => {
   try {
     const { status, limit = 50, offset = 0 } = req.query;
     let query =
-      "SELECT id, from_address, subject, body, draft_reply, received_at, classification, sentiment, urgency, confidence, escalation_triggered, escalation_reason, reasoning, status, created_at FROM emails WHERE tenant_id = ?";
+      `SELECT e.id, e.from_address, e.subject, e.body, e.draft_reply, e.received_at,
+              e.classification, e.sentiment, e.urgency, e.confidence,
+              e.escalation_triggered, e.escalation_reason, e.reasoning, e.status, e.created_at,
+              e.inbox_id, i.email AS inbox_email, i.label AS inbox_label
+         FROM emails e
+         LEFT JOIN inboxes i ON i.id = e.inbox_id
+        WHERE e.tenant_id = ?`;
     const params = [req.tenant.id];
     if (status) {
-      query += " AND status = ?";
+      query += " AND e.status = ?";
       params.push(status);
     }
-    query += " ORDER BY received_at DESC LIMIT ? OFFSET ?";
+    query += " ORDER BY e.received_at DESC LIMIT ? OFFSET ?";
     params.push(parseInt(limit), parseInt(offset));
     const rows = db.prepare(query).all(...params);
     const emails = rows.map((row) => ({
