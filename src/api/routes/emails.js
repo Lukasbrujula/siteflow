@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const nodemailer = require("nodemailer");
 const { db } = require("../../db");
+const { decrypt } = require("../crypto");
 
 function requireAuth(req, res, next) {
   const sessionId = req.cookies?.session;
@@ -110,6 +111,14 @@ router.post("/:id/send", requireAuth, async (req, res) => {
     if (!email.draft_reply)
       return res.status(400).json({ error: "No draft to send" });
 
+    const inbox = db
+      .prepare("SELECT * FROM inboxes WHERE id = ? AND tenant_id = ?")
+      .get(email.inbox_id, req.tenant.id);
+    if (!inbox)
+      return res
+        .status(409)
+        .json({ error: "Originating inbox not found for this email" });
+
     // Soft warning if unfilled placeholders remain — user can still send
     let placeholderWarning = null;
     if (/\[BITTE ERGÄNZEN:[^\]]*\]/.test(email.draft_reply)) {
@@ -142,14 +151,14 @@ router.post("/:id/send", requireAuth, async (req, res) => {
       .trim();
 
     const transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || "smtp.gmail.com",
-      port: parseInt(process.env.SMTP_PORT || "587"),
-      secure: false,
-      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD },
+      host: inbox.smtp_host,
+      port: inbox.smtp_port,
+      secure: inbox.smtp_port === 465,
+      auth: { user: inbox.smtp_user, pass: decrypt(inbox.smtp_password_enc) },
     });
 
     await transporter.sendMail({
-      from: process.env.SMTP_USER,
+      from: inbox.email,
       to: email.from_address,
       subject: cleanedSubject,
       text: cleanedBody,
@@ -266,6 +275,111 @@ router.post("/:id/unsubscribe", requireAuth, (req, res) => {
       .json({ message: "Unsubscribe not yet implemented", status: "stub" });
   } catch (err) {
     res.status(500).json({ error: "Failed to process unsubscribe" });
+  }
+});
+
+// POST /api/emails/:id/reclassify — "AI got it wrong" escape hatch
+router.post("/:id/reclassify", requireAuth, async (req, res) => {
+  const { new_classification } = req.body;
+  const VALID = ["SPAM", "AD", "URGENT", "OTHER"];
+  if (!VALID.includes(new_classification)) {
+    return res.status(400).json({
+      error: "Invalid classification. Must be one of: SPAM, AD, URGENT, OTHER",
+    });
+  }
+
+  const email = db
+    .prepare("SELECT * FROM emails WHERE id = ? AND tenant_id = ?")
+    .get(req.params.id, req.tenant.id);
+  if (!email) return res.status(404).json({ error: "Email not found" });
+
+  if (email.status === "sent") {
+    return res.status(409).json({ error: "Cannot reclassify a sent email" });
+  }
+
+  if (email.classification === new_classification) {
+    return res.json({ message: "No change", email });
+  }
+
+  const oldClassification = email.classification;
+  const goesToArchive =
+    new_classification === "SPAM" || new_classification === "AD";
+  const needsDraft = !goesToArchive && !email.draft_reply;
+
+  try {
+    if (goesToArchive) {
+      db.prepare(
+        "UPDATE emails SET classification = ?, status = 'archived', draft_reply = NULL, " +
+          "escalation_triggered = 0, escalation_reason = NULL WHERE id = ?",
+      ).run(new_classification, email.id);
+    } else if (needsDraft) {
+      db.prepare(
+        "UPDATE emails SET status = 'processing', classification = ? WHERE id = ?",
+      ).run(new_classification, email.id);
+
+      try {
+        const { callReplyAgent } = require("../../workflow/index");
+        const synthTriage = { classification: new_classification };
+        const draft = await callReplyAgent(email, synthTriage);
+        let draftReply = draft.body_plain || draft.body_html || "";
+
+        const tenantRow = db
+          .prepare("SELECT tone_profile FROM tenants WHERE id = ?")
+          .get(req.tenant.id);
+        let signature = "";
+        try {
+          const tp = tenantRow?.tone_profile
+            ? JSON.parse(tenantRow.tone_profile)
+            : {};
+          signature = tp.email_signature || "";
+        } catch (_) {}
+        if (signature) {
+          draftReply = draftReply.replace(
+            /\[SIGNATUR EINF(Ü|UE)GEN\]/gi,
+            signature,
+          );
+        }
+
+        db.prepare(
+          "UPDATE emails SET status = 'draft', draft_reply = ?, " +
+            "escalation_triggered = 0, escalation_reason = NULL WHERE id = ?",
+        ).run(draftReply, email.id);
+      } catch (agentErr) {
+        console.error(
+          "[emails] reclassify reply agent failed:",
+          agentErr.message,
+        );
+        db.prepare("UPDATE emails SET status = 'error' WHERE id = ?").run(
+          email.id,
+        );
+        return res
+          .status(502)
+          .json({ error: "Reply agent failed; email marked error" });
+      }
+    } else {
+      // URGENT/OTHER → URGENT/OTHER (different class), draft already exists — keep it
+      db.prepare(
+        "UPDATE emails SET classification = ?, escalation_triggered = 0, escalation_reason = NULL WHERE id = ?",
+      ).run(new_classification, email.id);
+    }
+
+    db.prepare(
+      "INSERT INTO audit_logs (id, tenant_id, action, detail, ip) VALUES (?, ?, ?, ?, ?)",
+    ).run(
+      require("crypto").randomUUID(),
+      req.tenant.id,
+      "reclassified",
+      email.id + ": " + (oldClassification || "NULL") + " -> " + new_classification,
+      req.ip,
+    );
+
+    const updated = db
+      .prepare("SELECT * FROM emails WHERE id = ?")
+      .get(email.id);
+    res.json({ message: "Reclassified", email: updated });
+  } catch (err) {
+    console.error("[emails] reclassify error:", err);
+    res.status(500).json({ error: "Failed to reclassify email" });
   }
 });
 

@@ -320,13 +320,17 @@ async function runWorkflowCycle() {
   }
 }
 
-const INTERVAL = 30000;
-console.log(
-  "[workflow] Starting (triage mode: " +
-    TRIAGE_MODE +
-    "), checking every " +
-    INTERVAL +
-    "ms",
-);
-runWorkflowCycle();
-setInterval(runWorkflowCycle, INTERVAL);
+if (require.main === module) {
+  const INTERVAL = 30000;
+  console.log(
+    "[workflow] Starting (triage mode: " +
+      TRIAGE_MODE +
+      "), checking every " +
+      INTERVAL +
+      "ms",
+  );
+  runWorkflowCycle();
+  setInterval(runWorkflowCycle, INTERVAL);
+}
+
+module.exports = { callReplyAgent };
