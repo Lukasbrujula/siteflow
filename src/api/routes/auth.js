@@ -3,6 +3,7 @@ const express = require("express");
 const router = express.Router();
 const crypto = require("crypto");
 const nodemailer = require("nodemailer");
+const { rateLimit } = require("express-rate-limit");
 const { db } = require("../../db");
 
 const OTP_EXPIRY_MINUTES = 10;
@@ -10,8 +11,15 @@ const SESSION_DURATION_DAYS = parseInt(
   process.env.SESSION_DURATION_DAYS || "7",
 );
 
+const otpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 function generateOTP() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+  return crypto.randomInt(100000, 1000000).toString();
 }
 
 function generateId() {
@@ -29,7 +37,7 @@ const transporter = nodemailer.createTransport({
 });
 
 // POST /api/auth/request-otp
-router.post("/request-otp", async (req, res) => {
+router.post("/request-otp", otpLimiter, async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: "Email required" });
@@ -99,7 +107,7 @@ router.post("/verify-otp", (req, res) => {
 
     res.cookie("session", sessionId, {
       httpOnly: true,
-      secure: false,
+      secure: process.env.NODE_ENV === "production",
       maxAge: SESSION_DURATION_DAYS * 86400 * 1000,
       sameSite: "strict",
     });
