@@ -105,6 +105,12 @@ function initDb() {
   } catch (err) {
     if (!err.message.includes("duplicate column name")) throw err;
   }
+  // Migration: add email_signature column (settings page support)
+  try {
+    db.exec("ALTER TABLE tenants ADD COLUMN email_signature TEXT");
+  } catch (err) {
+    if (!err.message.includes("duplicate column name")) throw err;
+  }
   // MI-01: inboxes table + emails.inbox_id for multi-inbox support
   db.exec(`
     CREATE TABLE IF NOT EXISTS inboxes (

@@ -34,6 +34,8 @@ app.use(cookieParser());
 app.use("/api/auth", require("./routes/auth"));
 app.use("/api/emails", require("./routes/emails"));
 app.use("/api/inboxes", require("./routes/inboxes"));
+app.use("/api/onboarding", require("./routes/onboarding-tenants"));
+app.use("/api/tone-profile", require("./routes/tone-profile"));
 
 // ---------------------------------------------------------------------------
 // Onboarding helpers
@@ -618,6 +620,12 @@ app.get("/api/health", async (req, res) => {
   res
     .status(status === "down" ? 500 : 200)
     .json({ status, checks, time: new Date().toISOString() });
+});
+
+// JSON 404 for unmatched /api/* routes — must run before the SPA catchall so
+// missing endpoints return JSON instead of being served the SPA index.html.
+app.use("/api", (req, res) => {
+  res.status(404).json({ error: "not_found", path: req.originalUrl });
 });
 
 app.get("/{*path}", (req, res) => {
