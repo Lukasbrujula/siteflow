@@ -42,10 +42,65 @@ app.use("/api/tone-profile", require("./routes/tone-profile"));
 // Onboarding helpers
 // ---------------------------------------------------------------------------
 
-// SITEWARE_TONE_AGENT_ID: the "SiteFlow Tone Analyzer" Siteware agent.
-// The agent must be individually allowlisted for the API key —
-// the "Alle Assistenten erlaubt" checkbox does NOT work.
-const TONE_AGENT_ID = process.env.SITEWARE_TONE_AGENT_ID;
+// Tone analysis uses Siteware's OpenAI passthrough proxy (JWT-only auth)
+// instead of /v1/api/completion/{agent_id}, bypassing the per-agent
+// allowlist UI bug that prevented adding the Tone Agent to the API key.
+const TONE_MODEL = process.env.SITEWARE_TONE_MODEL || "gpt-4.1";
+
+const TONE_SYSTEM_PROMPT = `# Persona (Rolle des Agenten)
+- Du bist Stil-Analyst für deutschsprachige B2B-Business-E-Mail-Kommunikation.
+- Du leitest ausschließlich Schreibstil-Muster aus bereitgestellten Beispielen ab; du beantwortest keine Inhalte und recherchierst keine neuen Fakten.
+
+# Target (Ziel des Agenten)
+- Aus 20–30 gesendeten E-Mails einer Person ein präzises, wiederverwendbares Schreibprofil extrahieren, sodass ein nachgelagertes Modell zukünftige E-Mails im gleichen Stil verfassen kann.
+
+# Context (Inputdaten)
+Die folgenden Inhalte werden in der User-Nachricht bereitgestellt:
+- Gesendete E-Mails (Primärquelle, maßgeblich für alle Stilentscheidungen)
+- Optional: Website-/Unternehmenskontext (nur zur Terminologie/Jargon-Einordnung, nicht für persönliche Phrasen/Signaturen)
+- Optional: Branchenhinweis (falls vorhanden)
+
+# Task Description (Aufgabenbeschreibung)
+Analysiere die bereitgestellten gesendeten E-Mails und extrahiere ein konsistentes Schreibprofil entlang dieser Dimensionen:
+1) Formalität (Sie/Du; steif/formell vs. locker/kollegial)
+2) Begrüßung (typische Anredeformel)
+3) Abschluss (typische Grußformel)
+4) Satzstil (kurz vs. verschachtelt; aktiv vs. passiv; Fließtext vs. Bullet Points; Knappheit/Struktur; typische Satzlängen)
+5) Bevorzugte Formulierungen (wiederkehrende Phrasen/Standard-Sätze)
+6) Zu vermeidende Ausdrücke (auffällig selten/nie genutzt)
+7) Fachbegriffe/Jargon (branchenspezifische Begriffe, Produkt-/Leistungsbegriffe, interne Bezeichnungen)
+
+# Constraints (Einschränkungen, Regeln und Rahmenbedingungen)
+- Nimm nur Muster auf, die in mindestens 3 E-Mails nachweisbar sind.
+- Wenn der Stil je nach Empfänger variiert, orientiere dich am dominanten Stil gemäß Analysefokus.
+- Erfinde keine Muster und keine Formulierungen „aus den E-Mails".
+- Website-Kontext darf ausschließlich zur Ergänzung von Terminologie/Jargon dienen, nie zur Erfindung persönlicher Phrasen, Begrüßungen, Abschlüsse oder individueller Präferenzen.
+
+# Output Format (exakte Form der finalen Ausgabe)
+Gib ausschließlich gültiges JSON aus (ohne Markdown, ohne Vor- oder Nachtext), exakt in diesem Schema, keine zusätzlichen Felder, keine Kommentare, keine Trailing Commas. Alle Werte auf Deutsch.
+{
+  "formality": "formal" | "informal",
+  "greeting": "<konkrete Begrüßungsformel aus den E-Mails>",
+  "closing": "<konkrete Abschlussformel aus den E-Mails>",
+  "sentenceStyle": "<präzise Beschreibung des Satzstils>",
+  "avoidances": ["<konkrete Formulierung 1>", "<konkrete Formulierung 2>"],
+  "preferences": ["<konkrete Phrase 1>", "<konkrete Phrase 2>"],
+  "jargon": ["<Fachbegriff 1>", "<Fachbegriff 2>"]
+}
+
+# Safety & Ethical Boundaries (verbindlich)
+- Nutze die Analyse nur für legitime, autorisierte Zwecke (z. B. interne Assistenz/Entlastung beim Formulieren).
+- Wenn der Zweck auf Täuschung, unautorisierte Identitätsübernahme oder Betrug hinausläuft: erstelle kein personenbezogenes Schreibprofil.
+  - Stattdessen liefere ein neutrales, unternehmensübliches Standardprofil ohne Personenbezug (generisch, nicht individualisiert), mit leeren Arrays für preferences/avoidances, und jargon nur falls eindeutig aus Website-Kontext ableitbar.
+
+# Tool Use / Reasoning Mode (interne Arbeitsweise, nicht ausgeben)
+- Arbeite intern schrittweise: Muster erfassen, Häufigkeiten zählen, Ausreißer verwerfen, Dominanz nach Fokus bestimmen.
+
+# Testing Instructions (Qualitätschecks vor Ausgabe)
+- Jedes ausgefüllte Muster (Begrüßung, Abschluss, konkrete Phrasen, Avoidances, Jargon) ist mindestens 3-mal belegt; sonst weglassen.
+- Wenn nicht belastbar: setze sinnvolle Defaults (z. B. leere Arrays) und vermeide Spekulation.
+- JSON-Validität prüfen: Schema exakt einhalten, Datentypen korrekt, keine Zusatzfelder.
+- Sprache prüfen: alle Inhalte auf Deutsch.`;
 
 function requireAuth(req, res, next) {
   const sessionId = req.cookies?.session;
@@ -391,11 +446,6 @@ app.post("/api/onboarding/scrape-website", async (req, res) => {
 });
 
 app.post("/api/onboarding/analyze-tone", async (req, res) => {
-  if (!TONE_AGENT_ID) {
-    res.status(503).json({ error: "SITEWARE_TONE_AGENT_ID not configured" });
-    return;
-  }
-
   const body = req.body || {};
   const errors = [];
   if (!Array.isArray(body.sentEmails)) {
@@ -436,6 +486,12 @@ app.post("/api/onboarding/analyze-tone", async (req, res) => {
     .map((e) => "Subject: " + e.subject + "\n\n" + e.body)
     .join("\n\n---\n\n");
 
+  const userContent =
+    "Gesendete E-Mails:\n\n" +
+    emailsText +
+    "\n\n---\n\nWebsite-/Unternehmenskontext:\n\n" +
+    (websiteContent || "(nicht angegeben)");
+
   const token =
     process.env.SITEWARE_TRIAGE_TOKEN || process.env.SITEWARE_API_TOKEN;
   if (!token) {
@@ -445,14 +501,11 @@ app.post("/api/onboarding/analyze-tone", async (req, res) => {
 
   try {
     const result = await sitewarePost(
-      "/v1/api/completion/" + TONE_AGENT_ID,
+      "/v1/api/proxy/openai/v1/responses",
       {
-        taskSettings: [
-          { name: "input_sentemails", value: emailsText },
-          { name: "input_websitecontent", value: websiteContent },
-          { name: "input_industry", value: "" },
-        ],
-        stream: false,
+        model: TONE_MODEL,
+        instructions: TONE_SYSTEM_PROMPT,
+        input: userContent,
       },
       token,
     );
@@ -464,9 +517,13 @@ app.post("/api/onboarding/analyze-tone", async (req, res) => {
       return;
     }
 
-    const answerRaw = result.json && result.json.answer;
+    const answerRaw = ((result.json && result.json.output) || [])
+      .flatMap((item) => item.content || [])
+      .filter((c) => c.type === "output_text")
+      .map((c) => c.text)
+      .join("");
     if (!answerRaw) {
-      res.status(502).json({ error: "Siteware API returned no answer field" });
+      res.status(502).json({ error: "Siteware API returned no output text" });
       return;
     }
 
