@@ -105,9 +105,19 @@ router.post("/verify-otp", (req, res) => {
       "INSERT INTO sessions (id, tenant_id, expires_at) VALUES (?, ?, ?)",
     ).run(sessionId, tenant.id, expiresAt);
 
+    // Default: Secure when NODE_ENV=production (preserves SugarPool prod behavior).
+    // Override via COOKIE_SECURE env var: set to "false" for HTTP-only deployments
+    // such as the internal test server (srv1572917). Without this override,
+    // browsers refuse to send the Secure cookie back over plain HTTP, and the
+    // post-login /api/auth/me call returns 401 → user bounces to /login.
+    const cookieSecure =
+      typeof process.env.COOKIE_SECURE === "string"
+        ? process.env.COOKIE_SECURE === "true"
+        : process.env.NODE_ENV === "production";
+
     res.cookie("session", sessionId, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: cookieSecure,
       maxAge: SESSION_DURATION_DAYS * 86400 * 1000,
       sameSite: "strict",
     });
