@@ -316,11 +316,17 @@ app.post("/api/onboarding/scan-sent", async (req, res) => {
       tls: true,
     });
 
+    // Frontend (Step2ScanSent) expects parallel string arrays it then zips
+    // back into {subject, body} samples for Step4ToneAnalysis.
+    const subjects = result.emails.map((e) => e.subject || "");
+    const rawEmails = result.emails.map((e) => e.body || "");
+
     res.json({
       success: true,
-      emails: result.emails,
+      emails_scanned: result.emails.length,
+      subjects,
+      rawEmails,
       detectedSignature: result.detectedSignature,
-      emailCount: result.emails.length,
     });
   } catch (err) {
     console.error("[onboarding] scan-sent error:", err);
@@ -432,9 +438,9 @@ app.post("/api/onboarding/analyze-tone", async (req, res) => {
       "/v1/api/completion/" + TONE_AGENT_ID,
       {
         taskSettings: [
-          { name: "input_sentemails", value: emailsText },
-          { name: "input_websitecontent", value: websiteContent },
-          { name: "input_industry", value: "" },
+          { name: "sentemails", value: emailsText },
+          { name: "websitecontent", value: websiteContent },
+          { name: "industry", value: "" },
         ],
         stream: false,
       },
@@ -497,9 +503,17 @@ app.post("/api/onboarding/save-tenant", async (req, res) => {
 
   const creds = body.credentials;
   const tenantId = crypto.randomUUID();
-  const toneProfile = body.toneProfile
-    ? JSON.stringify(body.toneProfile)
-    : null;
+  let toneProfile = null;
+  if (body.toneProfile) {
+    const tp = { ...body.toneProfile };
+    if (
+      typeof body.emailSignature === "string" &&
+      body.emailSignature !== ""
+    ) {
+      tp.email_signature = body.emailSignature;
+    }
+    toneProfile = JSON.stringify(tp);
+  }
   const imapPort = typeof creds.imapPort === "number" ? creds.imapPort : 993;
   const smtpPort = typeof creds.smtpPort === "number" ? creds.smtpPort : 465;
 
@@ -539,8 +553,46 @@ app.post("/api/onboarding/save-tenant", async (req, res) => {
     const row = db
       .prepare("SELECT id FROM tenants WHERE email = ?")
       .get(creds.email);
+    const actualTenantId = row.id;
 
-    res.json({ success: true, tenantId: row.id });
+    // MI-01 invariant: inbox.id == tenant.id for the wizard-created primary
+    // inbox. Required for the db.js backfill query and matches what the
+    // settings page / poller / SMTP send all read from.
+    const inboxLabel = creds.email.split("@")[0] || "primary";
+    db.prepare(
+      `INSERT INTO inboxes
+         (id, tenant_id, email, label, imap_host, imap_port, imap_user,
+          imap_password_enc, smtp_host, smtp_port, smtp_user, smtp_password_enc,
+          is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+       ON CONFLICT(id) DO UPDATE SET
+         email = excluded.email,
+         label = excluded.label,
+         imap_host = excluded.imap_host,
+         imap_port = excluded.imap_port,
+         imap_user = excluded.imap_user,
+         imap_password_enc = excluded.imap_password_enc,
+         smtp_host = excluded.smtp_host,
+         smtp_port = excluded.smtp_port,
+         smtp_user = excluded.smtp_user,
+         smtp_password_enc = excluded.smtp_password_enc,
+         is_active = 1`,
+    ).run(
+      actualTenantId,
+      actualTenantId,
+      creds.email,
+      inboxLabel,
+      creds.imapHost,
+      imapPort,
+      creds.email,
+      encImapPass,
+      creds.smtpHost,
+      smtpPort,
+      creds.email,
+      encSmtpPass,
+    );
+
+    res.json({ success: true, tenantId: actualTenantId });
   } catch (err) {
     console.error("[onboarding] save-tenant error:", err);
     res.status(500).json({ error: "Save failed" });
