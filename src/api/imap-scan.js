@@ -17,14 +17,22 @@ const SENT_FOLDER_CANDIDATES = [
 ];
 
 const CONNECTION_TIMEOUT_MS = 30000;
+const FETCH_TIMEOUT_MS = 30000;
 const MAX_BODY_LENGTH = 5000;
-const INITIAL_LOOKBACK_DAYS = 180;
+const INITIAL_LOOKBACK_DAYS = 60;
 const EXTENDED_LOOKBACK_DAYS = 365;
-const MIN_DIVERSE_EMAILS = 20;
-const INITIAL_FETCH_LIMIT = 100;
+const MIN_DIVERSE_EMAILS = 0;
+const INITIAL_FETCH_LIMIT = 50;
 const FINAL_CAP = 10;
 const MAX_PER_RECIPIENT = 5;
 const MIN_EMAILS_AFTER_FILTER = 5;
+
+class ImapScanTimeoutError extends Error {
+  constructor() {
+    super("IMAP scan timed out");
+    this.name = "ImapScanTimeoutError";
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Config
@@ -450,7 +458,24 @@ async function testImapConnection(config) {
 async function scanSentEmails(config) {
   const connection = await imapSimple.connect(buildImapConfig(config));
 
-  try {
+  let timeoutHandle;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      console.error(
+        "[imap-scan] FETCH TIMEOUT after " +
+          FETCH_TIMEOUT_MS +
+          "ms — aborting connection",
+      );
+      try {
+        connection.end();
+      } catch (_) {
+        // ignore — already aborting
+      }
+      reject(new ImapScanTimeoutError());
+    }, FETCH_TIMEOUT_MS);
+  });
+
+  const scanPromise = (async () => {
     const boxes = await connection.getBoxes();
     const sentFolder = detectSentFolder(boxes);
     if (!sentFolder) {
@@ -518,6 +543,7 @@ async function scanSentEmails(config) {
       const textPart = msg.parts.find((p) => p.which === "TEXT") || {};
 
       return {
+        uid: msg.attributes.uid,
         subject: getHeaderValue(headers, "subject") || "(no subject)",
         date:
           getHeaderValue(headers, "date") ||
@@ -587,7 +613,19 @@ async function scanSentEmails(config) {
     const emails = [];
     let detectedSignature = null;
 
-    for (const info of selected) {
+    for (let i = 0; i < selected.length; i++) {
+      const info = selected[i];
+      if (i % 10 === 0) {
+        console.log(
+          "[imap-scan] processed " +
+            i +
+            "/" +
+            selected.length +
+            " (uid=" +
+            info.uid +
+            ")",
+        );
+      }
       const plainText = extractPlainText(info.textBody, info.headers);
 
       if (detectedSignature === null) {
@@ -603,12 +641,23 @@ async function scanSentEmails(config) {
       });
     }
 
+    console.log("[imap-scan] scan complete: " + emails.length + " messages");
     return { emails, detectedSignature };
+  })();
+  // Prevent unhandled rejection if timeout wins the race
+  scanPromise.catch(() => {});
+
+  try {
+    return await Promise.race([scanPromise, timeoutPromise]);
   } catch (err) {
+    if (err instanceof ImapScanTimeoutError) {
+      throw err;
+    }
     const wrapped = new Error(formatImapError("IMAP scan failed", err));
     wrapped.cause = err;
     throw wrapped;
   } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     try {
       connection.end();
     } catch (_) {
@@ -617,4 +666,9 @@ async function scanSentEmails(config) {
   }
 }
 
-module.exports = { testImapConnection, scanSentEmails, stripHtml };
+module.exports = {
+  testImapConnection,
+  scanSentEmails,
+  stripHtml,
+  ImapScanTimeoutError,
+};

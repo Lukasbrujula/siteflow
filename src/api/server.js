@@ -14,6 +14,7 @@ const {
   testImapConnection,
   scanSentEmails,
   stripHtml,
+  ImapScanTimeoutError,
 } = require("./imap-scan");
 
 const app = express();
@@ -329,6 +330,15 @@ app.post("/api/onboarding/scan-sent", async (req, res) => {
       detectedSignature: result.detectedSignature,
     });
   } catch (err) {
+    if (err instanceof ImapScanTimeoutError) {
+      console.error("[onboarding] scan-sent timeout:", err.message);
+      res.status(504).json({
+        success: false,
+        error:
+          "IMAP-Scan dauert zu lange. Bitte versuchen Sie es später erneut.",
+      });
+      return;
+    }
     console.error("[onboarding] scan-sent error:", err);
     res.status(500).json({ success: false, error: "Scan failed" });
   }
