@@ -448,9 +448,9 @@ app.post("/api/onboarding/analyze-tone", async (req, res) => {
       "/v1/api/completion/" + TONE_AGENT_ID,
       {
         taskSettings: [
-          { name: "sentemails", value: emailsText },
-          { name: "websitecontent", value: websiteContent },
-          { name: "industry", value: "" },
+          { name: "input_sentemails", value: emailsText },
+          { name: "input_websitecontent", value: websiteContent },
+          { name: "input_industry", value: "" },
         ],
         stream: false,
       },
