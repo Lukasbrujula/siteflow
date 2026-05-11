@@ -565,6 +565,13 @@ app.post("/api/onboarding/save-tenant", async (req, res) => {
       errors.push('"credentials.smtpHost" is required');
   }
 
+  if (body.siteware_token !== undefined && typeof body.siteware_token !== "string") {
+    errors.push('"siteware_token" must be a string');
+  }
+  if (body.reply_agent_id !== undefined && typeof body.reply_agent_id !== "string") {
+    errors.push('"reply_agent_id" must be a string');
+  }
+
   if (errors.length > 0) {
     res.status(422).json({ error: errors.join("; ") });
     return;
@@ -585,6 +592,14 @@ app.post("/api/onboarding/save-tenant", async (req, res) => {
   }
   const imapPort = typeof creds.imapPort === "number" ? creds.imapPort : 993;
   const smtpPort = typeof creds.smtpPort === "number" ? creds.smtpPort : 465;
+  const sitewareToken =
+    typeof body.siteware_token === "string" && body.siteware_token !== ""
+      ? body.siteware_token
+      : null;
+  const replyAgentId =
+    typeof body.reply_agent_id === "string" && body.reply_agent_id !== ""
+      ? body.reply_agent_id
+      : null;
 
   try {
     const encImapPass = encrypt(creds.password);
@@ -592,8 +607,9 @@ app.post("/api/onboarding/save-tenant", async (req, res) => {
 
     db.prepare(
       `INSERT INTO tenants (id, email, imap_host, imap_user, imap_password_enc,
-         smtp_host, smtp_user, smtp_password_enc, tone_profile, imap_port, smtp_port)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         smtp_host, smtp_user, smtp_password_enc, tone_profile, imap_port, smtp_port,
+         siteware_token, reply_agent_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(email) DO UPDATE SET
          imap_host = excluded.imap_host,
          imap_user = excluded.imap_user,
@@ -603,7 +619,9 @@ app.post("/api/onboarding/save-tenant", async (req, res) => {
          smtp_password_enc = excluded.smtp_password_enc,
          tone_profile = COALESCE(excluded.tone_profile, tenants.tone_profile),
          imap_port = excluded.imap_port,
-         smtp_port = excluded.smtp_port`,
+         smtp_port = excluded.smtp_port,
+         siteware_token = COALESCE(excluded.siteware_token, tenants.siteware_token),
+         reply_agent_id = COALESCE(excluded.reply_agent_id, tenants.reply_agent_id)`,
     ).run(
       tenantId,
       creds.email,
@@ -616,6 +634,8 @@ app.post("/api/onboarding/save-tenant", async (req, res) => {
       toneProfile,
       imapPort,
       smtpPort,
+      sitewareToken,
+      replyAgentId,
     );
 
     // Get the actual tenant ID (may differ if email already existed)
