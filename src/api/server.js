@@ -500,6 +500,7 @@ app.post("/api/onboarding/analyze-tone", async (req, res) => {
   }
 
   try {
+    console.error("[onboarding] analyze-tone request — instructions len: " + TONE_SYSTEM_PROMPT.length + " input len: " + userContent.length);
     const result = await sitewarePost(
       "/v1/api/proxy/openai/v1/responses",
       {
@@ -511,6 +512,7 @@ app.post("/api/onboarding/analyze-tone", async (req, res) => {
     );
 
     if (result.status !== 200) {
+      console.error("[onboarding] analyze-tone upstream " + result.status + " body: " + (result.raw || "").slice(0, 1000));
       res
         .status(502)
         .json({ error: "Siteware API error: HTTP " + result.status });
