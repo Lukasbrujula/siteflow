@@ -30,7 +30,9 @@ router.get("/", requireAuth, (req, res) => {
   try {
     const inboxes = db
       .prepare(
-        "SELECT id, email, label, is_active FROM inboxes WHERE tenant_id = ? ORDER BY created_at ASC",
+        "SELECT " +
+          INBOX_PUBLIC_COLUMNS +
+          " FROM inboxes WHERE tenant_id = ? ORDER BY created_at ASC",
       )
       .all(req.tenant.id);
     res.json({ inboxes });
@@ -166,6 +168,54 @@ router.post("/", requireAuth, async (req, res) => {
     .prepare("SELECT " + INBOX_PUBLIC_COLUMNS + " FROM inboxes WHERE id = ?")
     .get(inboxId);
   res.status(201).json({ inbox });
+});
+
+router.delete("/:id", requireAuth, (req, res) => {
+  const inboxId = req.params.id;
+  try {
+    // Scope the lookup by tenant_id — a wrong tenant gets 404, not 403,
+    // to avoid leaking which ids exist under other tenants (same posture
+    // as the rest of this repo).
+    const inbox = db
+      .prepare("SELECT id FROM inboxes WHERE id = ? AND tenant_id = ?")
+      .get(inboxId, req.tenant.id);
+    if (!inbox) {
+      return res.status(404).json({ error: "Inbox not found" });
+    }
+
+    // Last-inbox protection: deleting the only inbox would leave the
+    // tenant with no mailbox to poll/send from. Force them to add a
+    // replacement first.
+    const { count } = db
+      .prepare("SELECT COUNT(*) AS count FROM inboxes WHERE tenant_id = ?")
+      .get(req.tenant.id);
+    if (count === 1) {
+      return res.status(409).json({
+        error: "Cannot delete the last inbox",
+        code: "LAST_INBOX",
+      });
+    }
+
+    // Orphan-then-delete in one transaction so a mid-flight failure
+    // doesn't leave emails pointing at a now-deleted inbox row. The
+    // emails table has no FK cascade (db.js:127-153), so we null
+    // inbox_id ourselves to keep history queryable on the tenant.
+    const txn = db.transaction(() => {
+      db.prepare("UPDATE emails SET inbox_id = NULL WHERE inbox_id = ?").run(
+        inboxId,
+      );
+      db.prepare("DELETE FROM inboxes WHERE id = ? AND tenant_id = ?").run(
+        inboxId,
+        req.tenant.id,
+      );
+    });
+    txn();
+
+    res.status(204).end();
+  } catch (err) {
+    console.error("[inboxes] delete error:", err);
+    res.status(500).json({ error: "Failed to delete inbox" });
+  }
 });
 
 module.exports = router;
