@@ -111,6 +111,17 @@ function initDb() {
   } catch (err) {
     if (!err.message.includes("duplicate column name")) throw err;
   }
+  // T-12: add siteware_token + reply_agent_id columns for per-tenant Siteware credentials
+  try {
+    db.exec("ALTER TABLE tenants ADD COLUMN siteware_token TEXT");
+  } catch (err) {
+    if (!err.message.includes("duplicate column name")) throw err;
+  }
+  try {
+    db.exec("ALTER TABLE tenants ADD COLUMN reply_agent_id TEXT");
+  } catch (err) {
+    if (!err.message.includes("duplicate column name")) throw err;
+  }
   // MI-01: inboxes table + emails.inbox_id for multi-inbox support
   db.exec(`
     CREATE TABLE IF NOT EXISTS inboxes (
@@ -196,6 +207,20 @@ function initDb() {
      )
      WHERE inbox_id IS NULL AND tenant_id IS NOT NULL`,
   );
+  // T-12: one-time backfill — copy env credentials into tenants where columns are NULL
+  const sitewareTokenEnv =
+    process.env.SITEWARE_API_TOKEN || process.env.SITEWARE_TRIAGE_TOKEN;
+  if (sitewareTokenEnv) {
+    db.prepare(
+      "UPDATE tenants SET siteware_token = ? WHERE siteware_token IS NULL",
+    ).run(sitewareTokenEnv);
+  }
+  const replyAgentIdEnv = process.env.SITEWARE_REPLY_AGENT_ID;
+  if (replyAgentIdEnv) {
+    db.prepare(
+      "UPDATE tenants SET reply_agent_id = ? WHERE reply_agent_id IS NULL",
+    ).run(replyAgentIdEnv);
+  }
   console.log("[db] Tables ready");
 }
 
