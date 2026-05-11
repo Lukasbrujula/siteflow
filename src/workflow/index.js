@@ -1,6 +1,7 @@
 require("dotenv").config();
 const { db } = require("../db");
 const https = require("https");
+const http = require("http");
 
 const SITEWARE_HOST = "api.siteware.io";
 const TRIAGE_TOKEN =
@@ -13,6 +14,9 @@ const TRIAGE_MODE = (
   process.env.SITEWARE_TRIAGE_MODE || "passthrough"
 ).toLowerCase();
 const TRIAGE_MODEL = process.env.SITEWARE_TRIAGE_MODEL || "gpt-4.1";
+const USE_N8N_PIPELINE = process.env.USE_N8N_PIPELINE === "true";
+const N8N_WEBHOOK_URL =
+  process.env.N8N_WEBHOOK_URL || "http://localhost:5678/webhook/pipeline";
 
 const TRIAGE_SYSTEM_PROMPT = `Du bist ein E-Mail-Triage-Assistent fuer ein deutsches B2B-Unternehmen. Deine einzige Aufgabe ist die maschinell verwertbare Klassifikation eingehender E-Mails. Du erstellst NIEMALS Antworten oder Zusammenfassungen.
 
@@ -64,6 +68,47 @@ function httpsPost(path, body, token) {
       },
     );
     req.on("error", reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+function postJson(url, body, timeoutMs = 60000) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const data = JSON.stringify(body);
+    const req = http.request(
+      {
+        hostname: u.hostname,
+        port: u.port,
+        path: u.pathname,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(data),
+        },
+        timeout: timeoutMs,
+      },
+      (res) => {
+        let buf = "";
+        res.on("data", (c) => (buf += c));
+        res.on("end", () => {
+          try {
+            resolve({
+              status: res.statusCode,
+              json: JSON.parse(buf),
+              raw: buf,
+            });
+          } catch (e) {
+            resolve({ status: res.statusCode, json: null, raw: buf });
+          }
+        });
+      },
+    );
+    req.on("error", reject);
+    req.on("timeout", () =>
+      req.destroy(new Error("timeout after " + timeoutMs + "ms")),
+    );
     req.write(data);
     req.end();
   });
@@ -208,12 +253,203 @@ async function callReplyAgent(email, triage) {
   return parsed;
 }
 
+async function processEmailViaN8n(email) {
+  const tenantRow = db
+    .prepare(
+      "SELECT siteware_token, reply_agent_id, tone_profile FROM tenants WHERE id = ?",
+    )
+    .get(email.tenant_id);
+
+  if (!tenantRow || !tenantRow.siteware_token || !tenantRow.reply_agent_id) {
+    console.error(
+      "[workflow/n8n] Missing credentials for tenant " +
+        email.tenant_id +
+        " (email " +
+        email.id +
+        ") — token=" +
+        Boolean(tenantRow && tenantRow.siteware_token) +
+        " reply_agent_id=" +
+        Boolean(tenantRow && tenantRow.reply_agent_id),
+    );
+    db.prepare("UPDATE emails SET status = ? WHERE id = ?").run(
+      "error",
+      email.id,
+    );
+    return;
+  }
+
+  let toneProfile = {};
+  try {
+    toneProfile = tenantRow.tone_profile
+      ? JSON.parse(tenantRow.tone_profile)
+      : {};
+  } catch (e) {
+    toneProfile = {};
+  }
+
+  const payload = {
+    tenant_id: email.tenant_id,
+    email: {
+      from: email.from_address,
+      subject: email.subject,
+      body: (email.body || "").substring(0, 5000),
+      headers: email.headers || "",
+      attachments: email.attachments || "",
+    },
+    tenant_config: {
+      siteware_token: tenantRow.siteware_token,
+      triage_model: "gpt-4.1",
+      reply_agent_id: tenantRow.reply_agent_id,
+      tone_profile: {
+        email_signature: toneProfile.email_signature || "",
+        knowledgebase:
+          toneProfile.knowledgebase || toneProfile.knowledge_base || "",
+      },
+    },
+  };
+
+  let result;
+  try {
+    result = await postJson(N8N_WEBHOOK_URL, payload, 60000);
+  } catch (err) {
+    console.error(
+      "[workflow/n8n] POST to " +
+        N8N_WEBHOOK_URL +
+        " failed for email " +
+        email.id +
+        ": " +
+        err.message,
+    );
+    db.prepare("UPDATE emails SET status = ? WHERE id = ?").run(
+      "error",
+      email.id,
+    );
+    return;
+  }
+
+  if (result.status !== 200 || (result.json && result.json.ok === false)) {
+    console.error(
+      "[workflow/n8n] Non-OK response for email " +
+        email.id +
+        " — status=" +
+        result.status +
+        " body=" +
+        (result.raw || "").slice(0, 500),
+    );
+    db.prepare("UPDATE emails SET status = ? WHERE id = ?").run(
+      "error",
+      email.id,
+    );
+    return;
+  }
+
+  const r = result.json || {};
+  const classification = r.classification || null;
+  const sentiment = r.sentiment || null;
+  const urgency = r.suggested_priority || null;
+  const confidence = r.confidence ?? null;
+  const reasoning = r.reasoning || null;
+  const escalated =
+    r.escalation_triggered === true || r.escalation_triggered === "true"
+      ? 1
+      : 0;
+  const escalationReason = escalated ? r.escalation_reason || null : null;
+
+  if (classification === "SPAM" || classification === "AD") {
+    db.prepare(
+      "UPDATE emails SET status = ?, classification = ?, sentiment = ?, urgency = ?, confidence = ?, escalation_triggered = ?, escalation_reason = ?, reasoning = ? WHERE id = ?",
+    ).run(
+      "archived",
+      classification,
+      sentiment,
+      urgency,
+      confidence,
+      escalated,
+      escalationReason,
+      reasoning,
+      email.id,
+    );
+    console.log("[workflow/n8n] Archived as " + classification);
+    return;
+  }
+
+  if (classification === "URGENT" || classification === "OTHER") {
+    const draft = r.draft;
+    if (!draft || !draft.body_plain) {
+      console.error(
+        "[workflow/n8n] " +
+          classification +
+          " classification but missing draft.body_plain for email " +
+          email.id,
+      );
+      db.prepare("UPDATE emails SET status = ? WHERE id = ?").run(
+        "error",
+        email.id,
+      );
+      return;
+    }
+
+    let draftReply = draft.body_plain;
+    const signature = toneProfile.email_signature || "";
+    if (signature) {
+      const before = draftReply;
+      draftReply = draftReply.replace(
+        /\[SIGNATUR EINF(Ü|UE)GEN\]/gi,
+        signature,
+      );
+      if (before !== draftReply) {
+        console.log("[workflow/n8n] Signature placeholder replaced");
+      }
+    }
+
+    const draftSubject = draft.subject || "Re: " + (email.subject || "");
+
+    db.prepare(
+      "UPDATE emails SET status = ?, classification = ?, sentiment = ?, urgency = ?, confidence = ?, escalation_triggered = ?, escalation_reason = ?, reasoning = ?, draft_reply = ?, subject = COALESCE(?, subject) WHERE id = ?",
+    ).run(
+      "draft",
+      classification,
+      sentiment,
+      urgency,
+      confidence,
+      escalated,
+      escalationReason,
+      reasoning,
+      draftReply,
+      draftSubject,
+      email.id,
+    );
+    console.log(
+      "[workflow/n8n] Draft saved, length=" +
+        draftReply.length +
+        " classification=" +
+        classification,
+    );
+    return;
+  }
+
+  console.error(
+    "[workflow/n8n] Unknown classification '" +
+      classification +
+      "' for email " +
+      email.id,
+  );
+  db.prepare("UPDATE emails SET status = ? WHERE id = ?").run(
+    "error",
+    email.id,
+  );
+}
+
 async function processEmail(email) {
   console.log("[workflow] Processing: " + email.subject);
   db.prepare("UPDATE emails SET status = ? WHERE id = ?").run(
     "processing",
     email.id,
   );
+  if (USE_N8N_PIPELINE) {
+    await processEmailViaN8n(email);
+    return;
+  }
   try {
     const triage = await callTriageAgent(email);
     console.log(
