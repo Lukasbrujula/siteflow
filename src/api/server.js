@@ -492,10 +492,11 @@ app.post("/api/onboarding/analyze-tone", async (req, res) => {
     "\n\n---\n\nWebsite-/Unternehmenskontext:\n\n" +
     (websiteContent || "(nicht angegeben)");
 
-  const token =
-    process.env.SITEWARE_TRIAGE_TOKEN || process.env.SITEWARE_API_TOKEN;
+  const token = req.tenant && req.tenant.siteware_token;
   if (!token) {
-    res.status(503).json({ error: "SITEWARE_TRIAGE_TOKEN not configured" });
+    res.status(412).json({
+      error: "Siteware-Zugangsdaten fehlen. Bitte Schritt 1 abschliessen.",
+    });
     return;
   }
 
