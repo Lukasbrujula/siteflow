@@ -589,6 +589,9 @@ app.post("/api/onboarding/save-tenant", async (req, res) => {
     ) {
       tp.email_signature = body.emailSignature;
     }
+    if (typeof body.knowledgebase === "string") {
+      tp.knowledgebase = body.knowledgebase;
+    }
     toneProfile = JSON.stringify(tp);
   }
   const imapPort = typeof creds.imapPort === "number" ? creds.imapPort : 993;
