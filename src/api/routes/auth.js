@@ -140,22 +140,26 @@ router.post("/logout", (req, res) => {
 });
 
 // GET /api/auth/me
+// Returns 200 with { authenticated: boolean } so the bootstrap probe
+// does not log a 401 in devtools before login. The 401 status is reserved
+// for endpoints gated by requireAuth where the absence of a session is
+// a genuine error; on /me, "no session" is information, not failure.
 router.get("/me", (req, res) => {
   const sessionId = req.cookies?.session;
-  if (!sessionId) return res.status(401).json({ error: "Not authenticated" });
+  if (!sessionId) return res.json({ authenticated: false });
 
   const now = Math.floor(Date.now() / 1000);
   const session = db
     .prepare("SELECT * FROM sessions WHERE id = ? AND expires_at > ?")
     .get(sessionId, now);
-  if (!session) return res.status(401).json({ error: "Session expired" });
+  if (!session) return res.json({ authenticated: false });
 
   const tenant = db
     .prepare(
       "SELECT id, email, role, tone_profile FROM tenants WHERE id = ?",
     )
     .get(session.tenant_id);
-  if (!tenant) return res.status(401).json({ error: "Account not found" });
+  if (!tenant) return res.json({ authenticated: false });
 
   const hasActiveInbox = db
     .prepare("SELECT 1 FROM inboxes WHERE tenant_id = ? AND is_active = 1 LIMIT 1")
@@ -163,6 +167,7 @@ router.get("/me", (req, res) => {
   const onboarded = Boolean(hasActiveInbox) && Boolean(tenant.tone_profile);
 
   res.json({
+    authenticated: true,
     tenant: {
       id: tenant.id,
       email: tenant.email,
