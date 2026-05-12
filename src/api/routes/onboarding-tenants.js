@@ -51,10 +51,16 @@ router.get("/tenants", requireAuth, (req, res) => {
 });
 
 // GET /api/onboarding/tenant — return current tenant's signature
+// Reads from tone_profile JSON (canonical, used by workflow/drafts) with
+// fallback to legacy tenants.email_signature column for any tenant whose
+// data still only lives there. See AUDIT-BUG-07.
 router.get("/tenant", requireAuth, (req, res) => {
   try {
     const row = db
-      .prepare("SELECT email_signature FROM tenants WHERE id = ?")
+      .prepare(
+        `SELECT COALESCE(json_extract(tone_profile, '$.email_signature'), email_signature) AS email_signature
+         FROM tenants WHERE id = ?`,
+      )
       .get(req.tenant.id);
     res.json({
       success: true,
@@ -151,10 +157,15 @@ router.post("/update-signature", requireAuth, (req, res) => {
   }
 
   try {
-    db.prepare("UPDATE tenants SET email_signature = ? WHERE id = ?").run(
-      body.email_signature,
-      req.tenant.id,
-    );
+    // Dual-write during transition: tone_profile JSON is the canonical store
+    // (read by workflow + drafts); legacy column is kept in sync for any
+    // remaining direct readers until it can be dropped. See AUDIT-BUG-07.
+    db.prepare(
+      `UPDATE tenants
+         SET tone_profile = json_set(COALESCE(tone_profile, '{}'), '$.email_signature', ?),
+             email_signature = ?
+       WHERE id = ?`,
+    ).run(body.email_signature, body.email_signature, req.tenant.id);
     res.json({ success: true });
   } catch (err) {
     console.error("[onboarding-tenants] update-signature error:", err);
