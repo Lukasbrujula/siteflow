@@ -6,9 +6,9 @@ const { db } = require("../../db");
 const { decrypt } = require("../crypto");
 
 // TODO: detect Sent folder via XLIST / LIST-EXTENDED \Sent flag (see
-// scanSentEmails in src/api/imap-scan.js) instead of hardcoding "INBOX/Sent".
+// scanSentEmails in src/api/imap-scan.js) instead of hardcoding "INBOX.Sent".
 // Hardcoded for Mittwald which is the only known customer provider in v1.
-const SENT_FOLDER = "INBOX/Sent";
+const SENT_FOLDER = "INBOX.Sent";
 
 function appendToSentFolder(inbox, { from, to, subject, body }) {
   return new Promise((resolve, reject) => {
@@ -95,7 +95,7 @@ router.get("/", requireAuth, (req, res) => {
               e.inbox_id, i.email AS inbox_email, i.label AS inbox_label
          FROM emails e
          LEFT JOIN inboxes i ON i.id = e.inbox_id
-        WHERE e.tenant_id = ?`;
+        WHERE e.tenant_id = ? AND e.status != 'sent'`;
     const params = [req.tenant.id];
     if (status) {
       query += " AND e.status = ?";
@@ -126,6 +126,31 @@ router.get("/", requireAuth, (req, res) => {
   } catch (err) {
     console.error("[emails] list error:", err);
     res.status(500).json({ error: "Failed to fetch emails" });
+  }
+});
+
+// GET /api/emails/sent — list sent emails for tenant
+router.get("/sent", requireAuth, (req, res) => {
+  try {
+    const { limit = 50, offset = 0 } = req.query;
+    const rows = db.prepare(
+      `SELECT e.id, e.from_address, e.subject, e.body, e.draft_reply, e.received_at,
+              e.classification, e.sentiment, e.urgency, e.confidence,
+              e.escalation_triggered, e.escalation_reason, e.reasoning, e.status, e.created_at,
+              e.inbox_id, i.email AS inbox_email, i.label AS inbox_label
+         FROM emails e
+         LEFT JOIN inboxes i ON i.id = e.inbox_id
+        WHERE e.tenant_id = ? AND e.status = 'sent'
+        ORDER BY e.received_at DESC LIMIT ? OFFSET ?`
+    ).all(req.tenant.id, parseInt(limit), parseInt(offset));
+    const emails = rows.map((row) => ({
+      ...row,
+      preview: (row.body || "").replace(/\s+/g, " ").slice(0, 200),
+    }));
+    res.json({ emails });
+  } catch (err) {
+    console.error("[emails] sent list error:", err);
+    res.status(500).json({ error: "Failed to fetch sent emails" });
   }
 });
 
