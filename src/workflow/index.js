@@ -405,7 +405,7 @@ async function processEmailViaN8n(email) {
     const draftSubject = draft.subject || "Re: " + (email.subject || "");
 
     db.prepare(
-      "UPDATE emails SET status = ?, classification = ?, sentiment = ?, urgency = ?, confidence = ?, escalation_triggered = ?, escalation_reason = ?, reasoning = ?, draft_reply = ?, subject = COALESCE(?, subject) WHERE id = ?",
+      "UPDATE emails SET status = ?, classification = ?, sentiment = ?, urgency = ?, confidence = ?, escalation_triggered = ?, escalation_reason = ?, reasoning = ?, draft_reply = ? WHERE id = ?",
     ).run(
       "draft",
       classification,
@@ -416,7 +416,6 @@ async function processEmailViaN8n(email) {
       escalationReason,
       reasoning,
       draftReply,
-      draftSubject,
       email.id,
     );
     console.log(
