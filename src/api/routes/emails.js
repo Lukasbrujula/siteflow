@@ -1,8 +1,72 @@
 const express = require("express");
 const router = express.Router();
 const nodemailer = require("nodemailer");
+const Imap = require("imap");
 const { db } = require("../../db");
 const { decrypt } = require("../crypto");
+
+// TODO: detect Sent folder via XLIST / LIST-EXTENDED \Sent flag (see
+// scanSentEmails in src/api/imap-scan.js) instead of hardcoding "INBOX/Sent".
+// Hardcoded for Mittwald which is the only known customer provider in v1.
+const SENT_FOLDER = "INBOX/Sent";
+
+function appendToSentFolder(inbox, { from, to, subject, body }) {
+  return new Promise((resolve, reject) => {
+    const domain = (from.split("@")[1] || "localhost").trim();
+    const messageId = `<${require("crypto").randomUUID()}@${domain}>`;
+    const date = new Date().toUTCString();
+    const headers = [
+      `From: ${from}`,
+      `To: ${to}`,
+      `Subject: ${subject}`,
+      `Date: ${date}`,
+      `Message-ID: ${messageId}`,
+      "MIME-Version: 1.0",
+      "Content-Type: text/plain; charset=utf-8",
+      "Content-Transfer-Encoding: 8bit",
+    ].join("\r\n");
+    const normalizedBody = String(body).replace(/\r?\n/g, "\r\n");
+    const rfc822 = `${headers}\r\n\r\n${normalizedBody}`;
+
+    const conn = new Imap({
+      user: inbox.email,
+      password: decrypt(inbox.imap_password_enc),
+      host: inbox.imap_host,
+      port: inbox.imap_port,
+      tls: true,
+      authTimeout: 15000,
+      connTimeout: 15000,
+    });
+
+    let settled = false;
+    const finish = (err) => {
+      if (settled) return;
+      settled = true;
+      try {
+        conn.end();
+      } catch (_) {}
+      if (err) reject(err);
+      else resolve();
+    };
+
+    conn.once("ready", () => {
+      conn.append(rfc822, { mailbox: SENT_FOLDER, flags: ["\\Seen"] }, (err) => {
+        if (err) return finish(err);
+        finish();
+      });
+    });
+    conn.once("error", finish);
+    conn.once("end", () => {
+      if (!settled) finish();
+    });
+
+    try {
+      conn.connect();
+    } catch (err) {
+      finish(err);
+    }
+  });
+}
 
 function requireAuth(req, res, next) {
   const sessionId = req.cookies?.session;
@@ -169,6 +233,22 @@ router.post("/:id/send", requireAuth, async (req, res) => {
       subject: cleanedSubject,
       text: cleanedBody,
     });
+
+    // Copy to customer's IMAP Sent folder so it shows up in their webmail.
+    // SMTP send already succeeded — never fail the response on APPEND error.
+    try {
+      await appendToSentFolder(inbox, {
+        from: inbox.email,
+        to: email.from_address,
+        subject: cleanedSubject,
+        body: cleanedBody,
+      });
+    } catch (appendErr) {
+      console.warn(
+        "[emails] IMAP APPEND to Sent folder failed (send still succeeded):",
+        appendErr?.message || appendErr,
+      );
+    }
 
     db.prepare("UPDATE emails SET status = ? WHERE id = ?").run(
       "sent",
