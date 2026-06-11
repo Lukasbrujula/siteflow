@@ -95,7 +95,7 @@ router.get("/", requireAuth, (req, res) => {
               e.inbox_id, i.email AS inbox_email, i.label AS inbox_label
          FROM emails e
          LEFT JOIN inboxes i ON i.id = e.inbox_id
-        WHERE e.tenant_id = ? AND e.status != 'sent'`;
+        WHERE e.tenant_id = ? AND e.status != 'sent' AND e.status != 'error'`;
     const params = [req.tenant.id];
     if (status) {
       query += " AND e.status = ?";

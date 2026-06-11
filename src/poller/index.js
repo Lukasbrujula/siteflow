@@ -64,7 +64,7 @@ async function pollSingleInbox(inbox) {
           "";
         subject = parsed.subject || "(no subject)";
         const dateStr = parsed.date ? parsed.date.toISOString() : "";
-        const text = parsed.text || "";
+        const text = parsed.text || (parsed.html ? parsed.html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() : "") || parsed.textAsHtml || "";
 
         const messageId = parsed.messageId
           ? parsed.messageId.trim()

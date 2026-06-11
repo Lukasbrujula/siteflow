@@ -1,0 +1,416 @@
+[
+  {
+    "updatedAt": "2026-05-12T21:30:58.097Z",
+    "createdAt": "2026-05-12T21:30:58.097Z",
+    "id": "oRyoajigt1tNZ6yC",
+    "name": "SiteFlow Pipeline (Stateless, Multi-tenant)",
+    "description": null,
+    "active": true,
+    "isArchived": false,
+    "nodes": [
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "pipeline",
+          "responseMode": "responseNode",
+          "options": {}
+        },
+        "id": "ffe7421a-e3a0-47e3-993c-fe65aecc6afb",
+        "name": "Webhook",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          -656,
+          208
+        ],
+        "webhookId": "siteflow-pipeline-webhook"
+      },
+      {
+        "parameters": {
+          "jsCode": "// Validate the incoming webhook body and normalize.\n// Expected payload:\n// {\n//   tenant_id: \"...\",\n//   email: { from, subject, body, headers?, attachments? },\n//   tenant_config: {\n//     siteware_token: \"<JWT>\",\n//     triage_model: \"gpt-4.1\",\n//     reply_agent_id: \"...\",\n//     tone_profile: { email_signature, knowledgebase }\n//   }\n// }\n\nconst body = $input.first().json.body || {};\nconst email = body.email || {};\nconst cfg = body.tenant_config || {};\n\nconst errors = [];\nif (!body.tenant_id) errors.push(\"tenant_id missing\");\nif (!email.from) errors.push(\"email.from missing\");\nif (!email.subject) errors.push(\"email.subject missing\");\nif (!email.body) errors.push(\"email.body missing\");\nif (!cfg.siteware_token) errors.push(\"tenant_config.siteware_token missing\");\nif (!cfg.reply_agent_id) errors.push(\"tenant_config.reply_agent_id missing\");\n\nif (errors.length) {\n  return [{ json: {\n    __validation_failed: true,\n    errors\n  }}];\n}\n\n// Normalize and pass through\nreturn [{ json: {\n  tenant_id: body.tenant_id,\n  from: email.from,\n  subject: email.subject,\n  body: String(email.body).substring(0, 5000),\n  headers: email.headers || \"\",\n  attachments: email.attachments || \"\",\n  siteware_token: cfg.siteware_token,\n  triage_model: cfg.triage_model || \"gpt-4.1\",\n  reply_agent_id: cfg.reply_agent_id,\n  tone_profile: {\n    email_signature: (cfg.tone_profile && cfg.tone_profile.email_signature) || \"\",\n    knowledgebase: (cfg.tone_profile && cfg.tone_profile.knowledgebase) || \"\"\n  }\n}}];"
+        },
+        "id": "c5994823-84f4-42d1-81e8-14ac0d398f5a",
+        "name": "Validate & Normalize",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          -448,
+          208
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "loose",
+              "version": 1
+            },
+            "conditions": [
+              {
+                "id": "val-check",
+                "leftValue": "={{ $json.__validation_failed }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "true",
+                  "singleValue": true
+                }
+              }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        },
+        "id": "b7eabd90-d26c-4f4f-bc2d-b449b93f2bfc",
+        "name": "Validation Failed?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [
+          -224,
+          208
+        ]
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ { ok: false, stage: \"validation\", errors: $json.errors } }}",
+          "options": {}
+        },
+        "id": "e80f0dca-c85e-4c91-abe9-49b033682b1b",
+        "name": "Respond: Validation Error",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.1,
+        "position": [
+          0,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://api.siteware.io/v1/api/proxy/openai/v1/responses",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "=Bearer {{ $json.siteware_token }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ ({\n  model: $json.triage_model,\n  instructions: \"Du bist ein E-Mail-Triage-Assistent fuer ein deutsches B2B-Unternehmen. Deine einzige Aufgabe ist die maschinell verwertbare Klassifikation eingehender E-Mails. Du erstellst NIEMALS Antworten oder Zusammenfassungen.\\nKlassifikation (genau ein Wert):\\n- SPAM: Phishing, schaedliche Massenwerbung, kompromittierter Absender. Nur bei mehreren Indikatoren. Im Zweifel OTHER.\\n- AD: legitime Werbung, Newsletter, automatisierte Benachrichtigungen.\\n- URGENT: Beschwerde, Zahlungsproblem, Vertragskuendigung, juristische Andeutung, Sicherheitsvorfall, explizite Frist <48h.\\n- OTHER: alles andere mit echtem Antwortbedarf.\\nSentiment (genau ein Wert): positive | neutral | negative | hostile.\\nescalation_triggered = true wenn EINS zutrifft: classification=URGENT, sentiment=hostile, Erwaehnung von Anwalt/Gericht/Klage/Verbraucherschutz/Datenschutzbehoerde/Presse, Personenschaden/Sicherheitsvorfall/Datenleck, oder explizite Frist <48 Stunden.\\nsuggested_priority: critical bei escalation_triggered=true; high zeitkritisch ohne Trigger; normal Standard fuer OTHER; low fuer AD/unkritisch.\\nOutput: AUSSCHLIESSLICH gueltiges JSON (kein Markdown, keine Code-Fences) mit exakt diesen Feldern:\\n{\\\"classification\\\":\\\"SPAM\\\"|\\\"AD\\\"|\\\"URGENT\\\"|\\\"OTHER\\\",\\\"confidence\\\":0.0-1.0,\\\"reasoning\\\":\\\"1-2 Saetze deutsch\\\",\\\"sentiment\\\":\\\"positive\\\"|\\\"neutral\\\"|\\\"negative\\\"|\\\"hostile\\\",\\\"escalation_triggered\\\":true|false,\\\"escalation_reason\\\":\\\"deutsch wenn true sonst leer\\\",\\\"language_detected\\\":\\\"de\\\"|\\\"en\\\"|\\\"...\\\",\\\"suggested_priority\\\":\\\"low\\\"|\\\"normal\\\"|\\\"high\\\"|\\\"critical\\\"}\\nEnum-Werte englisch. reasoning und escalation_reason deutsch.\",\n  input: \"Absenderadresse: \" + $json.from + \"\\nBetreff: \" + $json.subject + \"\\nHeader: \" + $json.headers + \"\\nAnhaenge: \" + $json.attachments + \"\\n\\nBody:\\n\" + $json.body\n}) }}",
+          "options": {
+            "response": {
+              "response": {
+                "responseFormat": "json"
+              }
+            },
+            "timeout": 30000
+          }
+        },
+        "id": "a3d080d4-dbb3-4e46-a140-b6072d79541b",
+        "name": "Triage (OpenAI passthrough)",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          0,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "// Parse triage JSON from OpenAI passthrough response shape.\n// Also carry forward the original context from Validate & Normalize so downstream nodes have tenant config + email.\n\nconst resp = $input.first().json;\nconst ctx = $('Validate & Normalize').first().json;\n\nconst texts = (resp.output || [])\n  .flatMap(item => item.content || [])\n  .filter(c => c.type === \"output_text\")\n  .map(c => c.text);\n\nconst joined = texts.join(\"\");\nlet clean = joined.trim().replace(/^```(?:json)?\\s*/i, \"\").replace(/\\s*```$/, \"\");\n\nlet triage;\ntry {\n  triage = JSON.parse(clean);\n} catch (e) {\n  return [{ json: {\n    __parse_failed: true,\n    stage: \"triage_parse\",\n    raw: joined.slice(0, 500)\n  }}];\n}\n\nreturn [{ json: {\n  // Triage result\n  classification: triage.classification,\n  confidence: triage.confidence,\n  reasoning: triage.reasoning,\n  sentiment: triage.sentiment,\n  escalation_triggered: triage.escalation_triggered,\n  escalation_reason: triage.escalation_reason,\n  language_detected: triage.language_detected,\n  suggested_priority: triage.suggested_priority,\n  // Carry forward context for downstream nodes\n  tenant_id: ctx.tenant_id,\n  from: ctx.from,\n  subject: ctx.subject,\n  body: ctx.body,\n  headers: ctx.headers,\n  attachments: ctx.attachments,\n  siteware_token: ctx.siteware_token,\n  reply_agent_id: ctx.reply_agent_id,\n  tone_profile: ctx.tone_profile\n}}];"
+        },
+        "id": "b1e227d0-bf58-4c22-8759-e7e2c55483f9",
+        "name": "Parse Triage",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          224,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict",
+              "version": 2
+            },
+            "conditions": [
+              {
+                "id": "needs-draft",
+                "leftValue": "={{ $json.classification }}",
+                "rightValue": "^(URGENT|OTHER)$",
+                "operator": {
+                  "type": "string",
+                  "operation": "regex"
+                }
+              }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        },
+        "id": "78136b39-0ec6-49ae-a980-b2fc231f6013",
+        "name": "Needs Draft?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [
+          432,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://api.siteware.io/v1/api/completion/{{ $json.reply_agent_id }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "=Bearer {{ $json.siteware_token }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ ({\n  taskSettings: [\n    { name: \"originalsubject\", value: $json.subject },\n    { name: \"incomingemail\",   value: \"From: \" + $json.from + \"\\nSubject: \" + $json.subject + \"\\n\\n\" + $json.body },\n    { name: \"knowledgebase\",   value: $json.tone_profile.knowledgebase || \"Keine Wissensbasis konfiguriert. Antworte hoeflich, frage hoeflich nach Details, und nutze Platzhalter [BITTE ERGAENZEN: ...] fuer alle konkreten Fakten.\" },\n    { name: \"employeesignature\", value: $json.tone_profile.email_signature || \"\" },\n    { name: \"triageclassification\", value: $json.classification }\n  ],\n  stream: false\n}) }}",
+          "options": {
+            "response": {
+              "response": {
+                "responseFormat": "json"
+              }
+            },
+            "timeout": 60000
+          }
+        },
+        "id": "bbb37101-e59d-4d26-a57a-23425d5c43a3",
+        "name": "Reply Composer",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          672,
+          208
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "// Siteware agent responses come as { answer: \"<JSON string>\" }.\n// Parse it out and merge with the triage context.\n\nconst resp = $input.first().json;\nconst ctx = $('Parse Triage').first().json;\n\nconst answer = resp.answer || \"\";\nlet clean = String(answer).trim().replace(/^```(?:json)?\\s*/i, \"\").replace(/\\s*```$/, \"\");\n\nlet draft;\ntry {\n  draft = JSON.parse(clean);\n} catch (e) {\n  // If it's not JSON, treat the whole answer as the reply body\n  draft = { body_plain: answer };\n}\n\nreturn [{ json: {\n  ok: true,\n  tenant_id: ctx.tenant_id,\n  classification: ctx.classification,\n  confidence: ctx.confidence,\n  reasoning: ctx.reasoning,\n  sentiment: ctx.sentiment,\n  escalation_triggered: ctx.escalation_triggered,\n  escalation_reason: ctx.escalation_reason,\n  language_detected: ctx.language_detected,\n  suggested_priority: ctx.suggested_priority,\n  email: {\n    from: ctx.from,\n    subject: ctx.subject,\n    body: ctx.body\n  },\n  draft: {\n    subject: draft.subject || (\"Re: \" + ctx.subject),\n    body_plain: draft.body_plain || draft.body || draft.text || \"\",\n    body_html: draft.body_html || null,\n    placeholders: draft.placeholders || []\n  }\n}}];"
+        },
+        "id": "6018a73b-7f10-4454-8e17-0faf08b8cd76",
+        "name": "Parse Reply",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          880,
+          208
+        ]
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ $json }}",
+          "options": {}
+        },
+        "id": "3e8d5050-4d1e-4cd4-9888-e68eac26c9f2",
+        "name": "Respond: With Draft",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.1,
+        "position": [
+          1104,
+          208
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "// SPAM/AD path: no draft. Return classification only.\nconst ctx = $input.first().json;\n\nreturn [{ json: {\n  ok: true,\n  tenant_id: ctx.tenant_id,\n  classification: ctx.classification,\n  confidence: ctx.confidence,\n  reasoning: ctx.reasoning,\n  sentiment: ctx.sentiment,\n  escalation_triggered: ctx.escalation_triggered,\n  escalation_reason: ctx.escalation_reason,\n  language_detected: ctx.language_detected,\n  suggested_priority: ctx.suggested_priority,\n  email: {\n    from: ctx.from,\n    subject: ctx.subject,\n    body: ctx.body\n  },\n  draft: null\n}}];"
+        },
+        "id": "a6c9b3db-9c93-4ae2-8fb9-c0677ea79004",
+        "name": "Format Archive Response",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          672,
+          512
+        ]
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ $json }}",
+          "options": {}
+        },
+        "id": "2580348e-c46c-4c11-b383-436b6c8da645",
+        "name": "Respond: Archive (no draft)",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.1,
+        "position": [
+          880,
+          512
+        ]
+      },
+      {
+        "parameters": {
+          "content": "## SiteFlow Pipeline — Stateless, Multi-tenant POC\n\n**What this proves:** n8n as pure stateless workflow engine. All tenant state (credentials, tone profile, agent IDs) passed in via webhook body. Same workflow serves N tenants.\n\n**Input contract (POST /webhook/pipeline or /webhook-test/pipeline):**\n```json\n{\n  \"tenant_id\": \"sugarpool-123\",\n  \"email\": {\n    \"from\": \"customer@example.de\",\n    \"subject\": \"...\",\n    \"body\": \"...\",\n    \"headers\": \"\",\n    \"attachments\": \"\"\n  },\n  \"tenant_config\": {\n    \"siteware_token\": \"<JWT>\",\n    \"triage_model\": \"gpt-4.1\",\n    \"reply_agent_id\": \"69df943efff5e6c3a00b88c7\",\n    \"tone_profile\": {\n      \"email_signature\": \"Mit freundlichen Gruessen\\n...\",\n      \"knowledgebase\": \"Unsere Firma macht...\"\n    }  }\n}\n```\n\n**Output (URGENT/OTHER):**\n```json\n{\n  \"ok\": true,\n  \"tenant_id\": \"...\",\n  \"classification\": \"URGENT\",\n  \"confidence\": 0.95,\n  \"reasoning\": \"...\",\n  \"sentiment\": \"hostile\",\n  \"escalation_triggered\": true,\n  \"draft\": { \"subject\": \"Re: ...\", \"body_plain\": \"...\" },\n  ...\n}\n```\n\n**Output (SPAM/AD):** same shape but `draft: null`.\n\n**Architecture:** backend holds tenants + credentials in SQLite, calls this webhook per incoming email, receives classified + optionally drafted response, writes result back to its own DB. n8n is stateless.",
+          "height": 580,
+          "width": 680
+        },
+        "id": "7447bdda-7504-43ec-bb92-65ada6450a20",
+        "name": "Sticky: Overview",
+        "type": "n8n-nodes-base.stickyNote",
+        "typeVersion": 1,
+        "position": [
+          -656,
+          624
+        ]
+      }
+    ],
+    "connections": {
+      "Webhook": {
+        "main": [
+          [
+            {
+              "node": "Validate & Normalize",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Validate & Normalize": {
+        "main": [
+          [
+            {
+              "node": "Validation Failed?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Validation Failed?": {
+        "main": [
+          [
+            {
+              "node": "Respond: Validation Error",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Triage (OpenAI passthrough)",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Triage (OpenAI passthrough)": {
+        "main": [
+          [
+            {
+              "node": "Parse Triage",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Parse Triage": {
+        "main": [
+          [
+            {
+              "node": "Needs Draft?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Needs Draft?": {
+        "main": [
+          [
+            {
+              "node": "Reply Composer",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Format Archive Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Reply Composer": {
+        "main": [
+          [
+            {
+              "node": "Parse Reply",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Parse Reply": {
+        "main": [
+          [
+            {
+              "node": "Respond: With Draft",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Format Archive Response": {
+        "main": [
+          [
+            {
+              "node": "Respond: Archive (no draft)",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "binaryMode": "separate"
+    },
+    "staticData": null,
+    "meta": null,
+    "pinData": {},
+    "versionId": "b5c409eb-7f51-4028-a091-913fa61deb9e",
+    "activeVersionId": "b5c409eb-7f51-4028-a091-913fa61deb9e",
+    "versionCounter": 3,
+    "triggerCount": 1,
+    "tags": [],
+    "versionMetadata": {
+      "name": "Version b5c409eb",
+      "description": ""
+    }
+  }
+]
